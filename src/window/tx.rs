@@ -223,8 +223,10 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         first_new
     }
 
-    fn load_slot(&mut self, i: usize) {
-        let slot = self.slots[i].unwrap();
+    fn load_slot(&mut self, i: usize) -> bool {
+        let Some(slot) = self.slots[i] else {
+            return false;
+        };
         let frame = match slot.kind {
             FlightKind::Data => Frame::data(slot.seq, slot.payload),
             FlightKind::Start => Frame::start(),
@@ -233,6 +235,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         self.out.load(&frame);
         self.writing = Some(i);
         self.state = TxState::Sending;
+        true
     }
 
     fn finish_write(&mut self) {
@@ -269,10 +272,11 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         }
 
         if let Some(i) = self.next_to_write() {
-            self.load_slot(i);
-            let done = self.pump_out()?;
-            if done {
-                self.finish_write();
+            if self.load_slot(i) {
+                let done = self.pump_out()?;
+                if done {
+                    self.finish_write();
+                }
             }
             return Ok(TxPoll::Pending);
         }
@@ -304,10 +308,13 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         let Some(i) = self.find_seq(seq) else {
             return Ok(TxPoll::Pending);
         };
-        if !self.slots[i].unwrap().written {
+        let Some(slot) = self.slots[i] else {
+            return Ok(TxPoll::Pending);
+        };
+        if !slot.written {
             return Ok(TxPoll::Pending);
         }
-        let kind = self.slots[i].unwrap().kind;
+        let kind = slot.kind;
         self.slots[i] = None;
         match kind {
             FlightKind::Data => {
@@ -334,10 +341,12 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         let Some(i) = self.find_seq(seq) else {
             return Ok(TxPoll::Pending);
         };
-        if !self.slots[i].unwrap().written {
+        let Some(slot) = self.slots[i].as_mut() else {
+            return Ok(TxPoll::Pending);
+        };
+        if !slot.written {
             return Ok(TxPoll::Pending);
         }
-        let slot = self.slots[i].as_mut().unwrap();
         if slot.retries_left == 0 {
             self.slots = [None; N];
             self.state = TxState::Failed;
@@ -433,7 +442,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         }
     }
 
-    /// Unwraps the transport.
+    /// Returns the underlying transport.
     pub fn release(self) -> T {
         self.transport
     }
@@ -445,11 +454,35 @@ mod tests {
     use crate::protocol::Frame;
     use crate::test_support::{concat2, concat3, MockTransport};
 
+    fn offer_ok<T: ByteTransport, const N: usize>(tx: &mut WindowedSender<T, N>, b: u8)
+    where
+        T::Error: core::fmt::Debug + PartialEq,
+    {
+        assert_eq!(tx.offer(b), Ok(()));
+    }
+
+    fn drain_acks<T: ByteTransport, const N: usize>(tx: &mut WindowedSender<T, N>, want: u8) {
+        let mut acked = 0u8;
+        for _ in 0..1024 {
+            match tx.poll() {
+                Ok(TxPoll::Acked) => {
+                    acked += 1;
+                    if acked == want {
+                        return;
+                    }
+                }
+                Ok(TxPoll::Pending) => {}
+                Ok(_) | Err(_) => break,
+            }
+        }
+        assert_eq!(acked, want);
+    }
+
     #[test]
     fn offer_fills_the_window_then_window_full() {
         let mut tx = WindowedSender::<_, 2>::new(MockTransport::with_incoming(&[]));
-        tx.offer(0x10).unwrap();
-        tx.offer(0x11).unwrap();
+        offer_ok(&mut tx, 0x10);
+        offer_ok(&mut tx, 0x11);
         assert_eq!(tx.outstanding(), 2);
         assert_eq!(tx.offer(0x12), Err(Error::WindowFull));
         assert_eq!(tx.next_seq(), 2);
@@ -462,21 +495,9 @@ mod tests {
             MockTransport::with_incoming(&incoming),
             RetryPolicy::new(50, 3),
         );
-        tx.offer(0xAA).unwrap();
-        tx.offer(0xBB).unwrap();
-        let mut acked = 0u8;
-        loop {
-            match tx.poll().unwrap() {
-                TxPoll::Acked => {
-                    acked += 1;
-                    if acked == 2 {
-                        break;
-                    }
-                }
-                TxPoll::Pending => {}
-                other => panic!("{other:?}"),
-            }
-        }
+        offer_ok(&mut tx, 0xAA);
+        offer_ok(&mut tx, 0xBB);
+        drain_acks(&mut tx, 2);
         assert_eq!(tx.outstanding(), 0);
         assert_eq!(
             tx.transport.written(),
@@ -495,22 +516,10 @@ mod tests {
             MockTransport::with_incoming(&incoming),
             RetryPolicy::new(50, 3),
         );
-        tx.offer(0x00).unwrap();
-        tx.offer(0x01).unwrap();
-        tx.offer(0x02).unwrap();
-        let mut acked = 0u8;
-        loop {
-            match tx.poll().unwrap() {
-                TxPoll::Acked => {
-                    acked += 1;
-                    if acked == 3 {
-                        break;
-                    }
-                }
-                TxPoll::Pending => {}
-                other => panic!("{other:?}"),
-            }
-        }
+        offer_ok(&mut tx, 0x00);
+        offer_ok(&mut tx, 0x01);
+        offer_ok(&mut tx, 0x02);
+        drain_acks(&mut tx, 3);
         assert_eq!(tx.outstanding(), 0);
         assert_eq!(tx.next_seq(), 3);
     }
@@ -526,21 +535,9 @@ mod tests {
             MockTransport::with_incoming(&incoming),
             RetryPolicy::new(50, 3),
         );
-        tx.offer(0x10).unwrap();
-        tx.offer(0x11).unwrap();
-        let mut acked = 0u8;
-        loop {
-            match tx.poll().unwrap() {
-                TxPoll::Acked => {
-                    acked += 1;
-                    if acked == 2 {
-                        break;
-                    }
-                }
-                TxPoll::Pending => {}
-                other => panic!("{other:?}"),
-            }
-        }
+        offer_ok(&mut tx, 0x10);
+        offer_ok(&mut tx, 0x11);
+        drain_acks(&mut tx, 2);
         assert_eq!(
             tx.transport.written(),
             concat3(
@@ -554,7 +551,7 @@ mod tests {
     #[test]
     fn finish_refused_while_data_is_outstanding() {
         let mut tx = WindowedSender::<_, 4>::new(MockTransport::with_incoming(&[]));
-        tx.offer(0x01).unwrap();
+        offer_ok(&mut tx, 0x01);
         assert_eq!(tx.offer_finish(), Err(Error::NotIdle));
     }
 
@@ -569,23 +566,11 @@ mod tests {
             MockTransport::with_incoming(&incoming),
             RetryPolicy::new(50, 3),
         );
-        tx.offer(0).unwrap();
-        tx.offer(1).unwrap();
-        tx.offer(2).unwrap();
-        tx.offer(3).unwrap();
-        let mut acked = 0u8;
-        loop {
-            match tx.poll().unwrap() {
-                TxPoll::Acked => {
-                    acked += 1;
-                    if acked == 3 {
-                        break;
-                    }
-                }
-                TxPoll::Pending => {}
-                other => panic!("{other:?}"),
-            }
-        }
+        offer_ok(&mut tx, 0);
+        offer_ok(&mut tx, 1);
+        offer_ok(&mut tx, 2);
+        offer_ok(&mut tx, 3);
+        drain_acks(&mut tx, 3);
         assert_eq!(tx.outstanding(), 1);
         assert_eq!(tx.offer(4), Err(Error::WindowFull));
     }

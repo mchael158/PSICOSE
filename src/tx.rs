@@ -248,7 +248,9 @@ impl<T: ByteTransport> Sender<T> {
             }
             None => {
                 let timeout = self.retry_policy.timeout_ticks;
-                let flight = self.inflight.as_mut().unwrap();
+                let Some(flight) = self.inflight.as_mut() else {
+                    return Ok(TxPoll::Pending);
+                };
                 flight.empty_ticks = flight.empty_ticks.saturating_add(1);
                 if flight.empty_ticks >= timeout {
                     self.on_attempt_failed()
@@ -260,7 +262,10 @@ impl<T: ByteTransport> Sender<T> {
     }
 
     fn on_control(&mut self, frame: Frame) -> Result<TxPoll, Error<T::Error>> {
-        let seq = self.inflight.as_ref().map(|f| f.seq).unwrap_or(0);
+        let seq = match self.inflight.as_ref() {
+            Some(flight) => flight.seq,
+            None => 0,
+        };
         match (frame.frame_type(), frame.seq()) {
             (FrameType::Ack, s) if s == seq => self.on_ack(),
             (FrameType::Nack, s) if s == seq => self.on_attempt_failed(),
@@ -275,7 +280,9 @@ impl<T: ByteTransport> Sender<T> {
     }
 
     fn on_ack(&mut self) -> Result<TxPoll, Error<T::Error>> {
-        let kind = self.inflight.as_ref().map(|f| f.kind).unwrap();
+        let Some(kind) = self.inflight.as_ref().map(|f| f.kind) else {
+            return Ok(TxPoll::Pending);
+        };
         self.inflight = None;
         match kind {
             FlightKind::Data(_) => {
@@ -296,7 +303,9 @@ impl<T: ByteTransport> Sender<T> {
     }
 
     fn on_attempt_failed(&mut self) -> Result<TxPoll, Error<T::Error>> {
-        let flight = self.inflight.as_mut().unwrap();
+        let Some(flight) = self.inflight.as_mut() else {
+            return Ok(TxPoll::Pending);
+        };
         if flight.retries_left == 0 {
             self.inflight = None;
             self.state = TxState::Failed;
@@ -345,7 +354,7 @@ impl<T: ByteTransport> Sender<T> {
         }
     }
 
-    /// Unwraps the transport.
+    /// Returns the underlying transport.
     pub fn release(self) -> T {
         self.transport
     }
@@ -360,13 +369,13 @@ mod tests {
     fn writes_one_byte_per_poll() {
         let transport = MockTransport::with_incoming(&Frame::ack(0).to_bytes());
         let mut sender = Sender::new(transport);
-        sender.offer(0x7E).unwrap();
+        assert_eq!(sender.offer(0x7E), Ok(()));
         for n in 1..=3 {
-            assert_eq!(sender.poll().unwrap(), TxPoll::Pending);
+            assert_eq!(sender.poll(), Ok(TxPoll::Pending));
             assert_eq!(sender.transport.written().len(), n);
             assert_eq!(sender.state(), TxState::Sending);
         }
-        assert_eq!(sender.poll().unwrap(), TxPoll::Pending);
+        assert_eq!(sender.poll(), Ok(TxPoll::Pending));
         assert_eq!(sender.transport.written().len(), 4);
         assert_eq!(sender.state(), TxState::WaitingAck);
     }
@@ -375,7 +384,7 @@ mod tests {
     fn offer_while_sending_is_not_idle() {
         let transport = MockTransport::with_incoming(&[]);
         let mut sender = Sender::new(transport);
-        sender.offer(0x01).unwrap();
+        assert_eq!(sender.offer(0x01), Ok(()));
         assert_eq!(sender.offer(0x02), Err(Error::NotIdle));
         assert_eq!(sender.offer_finish(), Err(Error::NotIdle));
     }
@@ -384,7 +393,7 @@ mod tests {
     fn happy_path_single_byte_is_acked_and_seq_advances() {
         let transport = MockTransport::with_incoming(&Frame::ack(0).to_bytes());
         let mut sender = Sender::new(transport);
-        sender.send_byte(0x7E).unwrap();
+        assert_eq!(sender.send_byte(0x7E), Ok(()));
         assert_eq!(sender.next_seq(), 1);
         assert_eq!(sender.transport.written(), Frame::data(0, 0x7E).to_bytes());
     }
@@ -394,7 +403,7 @@ mod tests {
         let incoming = concat2(Frame::nack(0).to_bytes(), Frame::ack(0).to_bytes());
         let transport = MockTransport::with_incoming(&incoming);
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(50, 3));
-        sender.send_byte(0x11).unwrap();
+        assert_eq!(sender.send_byte(0x11), Ok(()));
         assert_eq!(
             sender.transport.written(),
             concat2(Frame::data(0, 0x11).to_bytes(), Frame::data(0, 0x11).to_bytes())
@@ -405,15 +414,14 @@ mod tests {
     fn ack_for_wrong_sequence_is_ignored_until_timeout() {
         let transport = MockTransport::with_incoming(&Frame::ack(99).to_bytes());
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(5, 0));
-        let err = sender.send_byte(0x01).unwrap_err();
-        assert_eq!(err, Error::RetriesExhausted);
+        assert_eq!(sender.send_byte(0x01), Err(Error::RetriesExhausted));
     }
 
     #[test]
     fn nack_for_wrong_sequence_is_ignored_until_timeout() {
         let transport = MockTransport::with_incoming(&Frame::nack(99).to_bytes());
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(5, 0));
-        assert_eq!(sender.send_byte(0x01).unwrap_err(), Error::RetriesExhausted);
+        assert_eq!(sender.send_byte(0x01), Err(Error::RetriesExhausted));
         assert_eq!(sender.transport.written(), Frame::data(0, 0x01).to_bytes());
     }
 
@@ -424,7 +432,7 @@ mod tests {
         let incoming = concat2(bad, Frame::ack(0).to_bytes());
         let transport = MockTransport::with_incoming(&incoming);
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(50, 3));
-        sender.send_byte(0x42).unwrap();
+        assert_eq!(sender.send_byte(0x42), Ok(()));
         assert_eq!(sender.next_seq(), 1);
         assert_eq!(sender.transport.written(), Frame::data(0, 0x42).to_bytes());
     }
@@ -433,7 +441,7 @@ mod tests {
     fn timeout_with_no_response_exhausts_retries_and_fails() {
         let transport = MockTransport::with_incoming(&[]);
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(2, 1));
-        assert_eq!(sender.send_byte(0xAB).unwrap_err(), Error::RetriesExhausted);
+        assert_eq!(sender.send_byte(0xAB), Err(Error::RetriesExhausted));
         assert_eq!(sender.state(), TxState::Failed);
     }
 
@@ -441,7 +449,7 @@ mod tests {
     fn start_waits_for_ack() {
         let transport = MockTransport::with_incoming(&Frame::ack(0).to_bytes());
         let mut sender = Sender::new(transport);
-        sender.send_start().unwrap();
+        assert_eq!(sender.send_start(), Ok(()));
         assert_eq!(sender.state(), TxState::Idle);
         assert_eq!(sender.next_seq(), 0);
         assert_eq!(sender.transport.written(), Frame::start().to_bytes());
@@ -451,7 +459,7 @@ mod tests {
     fn finish_waits_for_ack() {
         let transport = MockTransport::with_incoming(&Frame::ack(0).to_bytes());
         let mut sender = Sender::new(transport);
-        sender.send_finish().unwrap();
+        assert_eq!(sender.send_finish(), Ok(()));
         assert_eq!(sender.state(), TxState::Finished);
         assert_eq!(sender.transport.written(), Frame::finish(0).to_bytes());
     }
@@ -460,9 +468,9 @@ mod tests {
     fn offer_after_finish_is_not_idle_until_start() {
         let transport = MockTransport::with_incoming(&Frame::ack(0).to_bytes());
         let mut sender = Sender::new(transport);
-        sender.send_finish().unwrap();
+        assert_eq!(sender.send_finish(), Ok(()));
         assert_eq!(sender.offer(0x01), Err(Error::NotIdle));
-        sender.offer_start().unwrap();
+        assert_eq!(sender.offer_start(), Ok(()));
         assert_eq!(sender.state(), TxState::Sending);
     }
 
@@ -474,7 +482,7 @@ mod tests {
         let incoming = concat2(bad, Frame::ack(0).to_bytes());
         let transport = MockTransport::with_incoming(&incoming);
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(50, 3));
-        sender.send_byte(0x01).unwrap();
+        assert_eq!(sender.send_byte(0x01), Ok(()));
         assert_eq!(sender.transport.written(), Frame::data(0, 0x01).to_bytes());
     }
 }

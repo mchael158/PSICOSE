@@ -1,6 +1,6 @@
 [package]
 name = "psicose"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -21,6 +21,7 @@ include = [
     "PROTOCOL.md",
     "PROTOCOL.pt-BR.md",
     "CHANGELOG.md",
+    "examples/**",
 ]
 
 [package.metadata.docs.rs]

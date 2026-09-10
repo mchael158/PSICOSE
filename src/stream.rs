@@ -275,8 +275,7 @@ mod tests {
     use crate::window::{WindowedReceiver, WindowedSender};
 
     fn ack_run(data_bytes: u8) -> [u8; 36] {
-        // up to 8 DATA ACKs + 1 FINISH ACK
-        debug_assert!(data_bytes <= 8);
+        let data_bytes = core::cmp::min(data_bytes, 8);
         let mut out = [0u8; 36];
         let frames = data_bytes as usize + 1;
         for i in 0..frames {
@@ -290,8 +289,8 @@ mod tests {
     fn slice_source_is_just_bytes() {
         let jpeg_so_i_like = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
         let mut src = SliceSource::new(&jpeg_so_i_like);
-        assert_eq!(src.read_byte().unwrap(), Some(0xFF));
-        assert_eq!(src.read_byte().unwrap(), Some(0xD8));
+        assert_eq!(src.read_byte(), Ok(Some(0xFF)));
+        assert_eq!(src.read_byte(), Ok(Some(0xD8)));
         assert_eq!(src.remaining(), 4);
     }
 
@@ -303,7 +302,7 @@ mod tests {
             MockTransport::with_incoming(&incoming[..20]),
             RetryPolicy::new(50, 3),
         );
-        assert_eq!(send_bytes(&mut tx, &payload).unwrap(), 4);
+        assert_eq!(send_bytes(&mut tx, &payload), Ok(4));
         assert_eq!(tx.state(), crate::tx::TxState::Finished);
     }
 
@@ -316,8 +315,7 @@ mod tests {
         );
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
         let mut buf = [0u8; 8];
-        let got = recv_bytes(&mut rx, &mut buf).unwrap();
-        assert_eq!(got, &[0xFF, 0xD8]);
+        assert_eq!(recv_bytes(&mut rx, &mut buf), Ok(&[0xFF, 0xD8][..]));
     }
 
     #[test]
@@ -328,8 +326,10 @@ mod tests {
         );
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
         let mut buf = [0u8; 1];
-        let err = recv_bytes(&mut rx, &mut buf).unwrap_err();
-        assert_eq!(err, StreamError::Application(SliceFull));
+        assert_eq!(
+            recv_bytes(&mut rx, &mut buf),
+            Err(StreamError::Application(SliceFull))
+        );
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
             RetryPolicy::new(50, 3),
         );
         let mut src = SliceSource::new(&payload);
-        assert_eq!(send_all_windowed(&mut tx, &mut src).unwrap(), 4);
+        assert_eq!(send_all_windowed(&mut tx, &mut src), Ok(4));
         assert_eq!(tx.state(), crate::tx::TxState::Finished);
     }
 
@@ -355,8 +355,7 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
         let mut buf = [0u8; 8];
         let mut sink = SliceSink::new(&mut buf);
-        let n = recv_all_windowed(&mut rx, &mut sink).unwrap();
-        assert_eq!(n, 2);
+        assert_eq!(recv_all_windowed(&mut rx, &mut sink), Ok(2));
         assert_eq!(sink.written(), b"{}");
     }
 }

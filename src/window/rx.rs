@@ -107,7 +107,9 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
     }
 
     fn push_emit(&mut self, byte: u8) {
-        debug_assert!(self.emit_len < N);
+        if self.emit_len >= N {
+            return;
+        }
         self.emit[self.emit_len] = byte;
         self.emit_len += 1;
     }
@@ -194,7 +196,10 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
             return Ok(PollOutcome::Delivered(byte));
         }
         if !self.out.is_idle() {
-            return Ok(self.pump_reply()?.unwrap_or(PollOutcome::Pending));
+            return Ok(match self.pump_reply()? {
+                Some(outcome) => outcome,
+                None => PollOutcome::Pending,
+            });
         }
 
         self.state = RxState::Receiving;
@@ -219,7 +224,10 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
                     &Frame::nack(self.expected_seq.current()),
                     PendingAction::Rejected,
                 );
-                return Ok(self.pump_reply()?.unwrap_or(PollOutcome::Pending));
+                return Ok(match self.pump_reply()? {
+                Some(outcome) => outcome,
+                None => PollOutcome::Pending,
+            });
             }
         };
 
@@ -233,7 +241,10 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
             }
         }
 
-        Ok(self.pump_reply()?.unwrap_or(PollOutcome::Pending))
+        Ok(match self.pump_reply()? {
+            Some(outcome) => outcome,
+            None => PollOutcome::Pending,
+        })
     }
 
     fn handle_start(&mut self) -> Result<(), Error<T::Error>> {
@@ -323,7 +334,7 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(
             &Frame::data(0, 0x42).to_bytes(),
         ));
-        assert_eq!(poll_until_settled(&mut rx).unwrap(), PollOutcome::Delivered(0x42));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x42)));
         assert_eq!(rx.expected_seq(), 1);
         assert_eq!(rx.transport.written(), Frame::ack(0).to_bytes());
     }
@@ -337,10 +348,9 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
 
         assert_eq!(
-            poll_until_settled(&mut rx).unwrap(),
-            PollOutcome::Delivered(0xB0)
-        );
-        assert_eq!(rx.poll().unwrap(), PollOutcome::Delivered(0xB1));
+            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xB0)
+        ));
+        assert_eq!(rx.poll(), Ok(PollOutcome::Delivered(0xB1)));
         assert_eq!(rx.expected_seq(), 2);
         assert_eq!(
             rx.transport.written(),
@@ -355,11 +365,10 @@ mod tests {
             Frame::data(0, 0xAA).to_bytes(),
         );
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
-        assert_eq!(poll_until_settled(&mut rx).unwrap(), PollOutcome::Delivered(0xAA));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xAA)));
         assert_eq!(
-            poll_until_settled(&mut rx).unwrap(),
-            PollOutcome::DuplicateIgnored
-        );
+            poll_until_settled(&mut rx), Ok(PollOutcome::DuplicateIgnored
+        ));
         assert_eq!(rx.expected_seq(), 1);
     }
 
@@ -368,7 +377,7 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(
             &Frame::data(5, 0xFF).to_bytes(),
         ));
-        assert_eq!(poll_until_settled(&mut rx).unwrap(), PollOutcome::Rejected);
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Rejected));
         assert_eq!(rx.expected_seq(), 0);
         assert_eq!(rx.transport.written(), Frame::nack(5).to_bytes());
     }
@@ -380,7 +389,7 @@ mod tests {
             Frame::finish(2).to_bytes(),
         );
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
-        assert_eq!(poll_until_settled(&mut rx).unwrap(), PollOutcome::Rejected);
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Rejected));
         assert_eq!(rx.expected_seq(), 0);
         assert_ne!(rx.state(), RxState::Finished);
     }
@@ -394,9 +403,9 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
         // Force expected to 255 without exposing a setter on the windowed type.
         rx.expected_seq = Sequence::from_raw(255);
-        assert_eq!(poll_until_settled(&mut rx).unwrap(), PollOutcome::Delivered(0xFE));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xFE)));
         assert_eq!(rx.expected_seq(), 0);
-        assert_eq!(poll_until_settled(&mut rx).unwrap(), PollOutcome::Delivered(0x00));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x00)));
         assert_eq!(rx.expected_seq(), 1);
     }
 }

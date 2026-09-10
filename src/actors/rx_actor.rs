@@ -92,12 +92,12 @@ mod tests {
         let bytes = Frame::data_frame(0, 0x42).to_bytes();
         let mut actor = RxActor::new(MockTransport::with_incoming(&bytes));
 
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
         // Fourth incoming byte + first ACK byte: still pending.
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
-        assert_eq!(tick_until_settled(&mut actor).unwrap(), Tick::Ready(0x42));
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
+        assert_eq!(tick_until_settled(&mut actor), Ok(Tick::Ready(0x42)));
     }
 
     #[test]
@@ -108,8 +108,8 @@ mod tests {
         );
         let mut actor = RxActor::new(MockTransport::with_incoming(&incoming));
 
-        assert_eq!(tick_until_settled(&mut actor).unwrap(), Tick::Ready(0xAA));
-        assert_eq!(tick_until_settled(&mut actor).unwrap(), Tick::Done);
+        assert_eq!(tick_until_settled(&mut actor), Ok(Tick::Ready(0xAA)));
+        assert_eq!(tick_until_settled(&mut actor), Ok(Tick::Done));
     }
 
     #[test]
@@ -120,28 +120,29 @@ mod tests {
         );
         let mut actor = RxActor::new(MockTransport::with_incoming(&incoming));
 
-        assert_eq!(tick_until_settled(&mut actor).unwrap(), Tick::Ready(0x11));
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
+        assert_eq!(tick_until_settled(&mut actor), Ok(Tick::Ready(0x11)));
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
         // Fourth byte completes the duplicate: re-ACK, do not re-deliver.
-        assert_eq!(actor.tick().unwrap(), Tick::Pending);
+        assert_eq!(actor.tick(), Ok(Tick::Pending));
         assert_eq!(actor.receiver().expected_seq(), 1);
     }
 
     #[test]
     fn two_links_are_served_by_one_system_without_blocking() {
         let mut sys: System<RxActor<MockTransport>, 2> = System::new();
-        let a = sys
-            .spawn(RxActor::new(MockTransport::with_incoming(
-                &Frame::data_frame(0, 0x10).to_bytes(),
-            )))
-            .unwrap();
-        let b = sys
-            .spawn(RxActor::new(MockTransport::with_incoming(
-                &Frame::data_frame(0, 0x20).to_bytes(),
-            )))
-            .unwrap();
+        let a = sys.spawn(RxActor::new(MockTransport::with_incoming(
+            &Frame::data_frame(0, 0x10).to_bytes(),
+        )));
+        let b = sys.spawn(RxActor::new(MockTransport::with_incoming(
+            &Frame::data_frame(0, 0x20).to_bytes(),
+        )));
+        assert!(a.is_ok());
+        assert!(b.is_ok());
+        let (Ok(a), Ok(b)) = (a, b) else {
+            return;
+        };
 
         let mut got_a = None;
         let mut got_b = None;
@@ -170,7 +171,7 @@ mod tests {
         let mut actor = RxActor::new(MockTransport::with_incoming(&bytes));
 
         for _ in 0..bytes.len() {
-            assert_eq!(actor.tick().unwrap(), Tick::Pending);
+            assert_eq!(actor.tick(), Ok(Tick::Pending));
         }
         assert_eq!(actor.receiver().expected_seq(), 0);
     }

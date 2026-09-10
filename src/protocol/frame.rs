@@ -188,9 +188,8 @@ mod tests {
     #[test]
     fn roundtrip_data_frame() {
         let frame = Frame::data(42, 0xAA);
-        let decoded = Frame::from_bytes(frame.to_bytes()).unwrap();
-        assert_eq!(decoded, frame);
-        assert_eq!(decoded.payload(), 0xAA);
+        assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
+        assert_eq!(frame.payload(), 0xAA);
     }
 
     #[test]
@@ -210,7 +209,7 @@ mod tests {
             Frame::start(),
             Frame::finish(255),
         ] {
-            assert_eq!(Frame::from_bytes(frame.to_bytes()).unwrap(), frame);
+            assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
         }
     }
 
@@ -218,7 +217,7 @@ mod tests {
     fn rejects_unknown_type_byte() {
         let mut bytes = Frame::data(1, 2).to_bytes();
         bytes[0] = 0x00;
-        assert_eq!(Frame::from_bytes(bytes).unwrap_err(), FrameError::InvalidType(0x00));
+        assert_eq!(Frame::from_bytes(bytes), Err(FrameError::InvalidType(0x00)));
     }
 
     #[test]
@@ -226,8 +225,8 @@ mod tests {
         let mut bytes = Frame::data(1, 2).to_bytes();
         bytes[2] ^= 0xFF;
         assert!(matches!(
-            Frame::from_bytes(bytes).unwrap_err(),
-            FrameError::CrcMismatch { .. }
+            Frame::from_bytes(bytes),
+            Err(FrameError::CrcMismatch { .. })
         ));
     }
 
@@ -237,9 +236,8 @@ mod tests {
         let crc = crc8(&header);
         let bytes = [header[0], header[1], header[2], crc];
         assert_eq!(
-            Frame::from_bytes(bytes).unwrap_err(),
-            FrameError::InvalidSemantics
-        );
+            Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics
+        ));
     }
 
     #[test]
@@ -248,18 +246,18 @@ mod tests {
         let crc = crc8(&header);
         let bytes = [header[0], header[1], header[2], crc];
         assert_eq!(
-            Frame::from_bytes(bytes).unwrap_err(),
-            FrameError::InvalidSemantics
-        );
+            Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics
+        ));
     }
 
     #[test]
     fn seq_and_data_span_full_u8_range() {
         for &seq in &[0u8, 1, 127, 128, 254, 255] {
             for &data in &[0u8, 1, 127, 128, 254, 255] {
-                let decoded = Frame::from_bytes(Frame::data(seq, data).to_bytes()).unwrap();
-                assert_eq!(decoded.seq(), seq);
-                assert_eq!(decoded.payload(), data);
+                assert_eq!(
+                    Frame::from_bytes(Frame::data(seq, data).to_bytes()),
+                    Ok(Frame::data(seq, data))
+                );
             }
         }
     }

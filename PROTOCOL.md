@@ -1,4 +1,4 @@
-# PSICOSE-1B — formal protocol (0.2.1)
+# PSICOSE-1B — formal protocol (0.2.2)
 
 [English](PROTOCOL.md) · [Português (Brasil)](PROTOCOL.pt-BR.md)
 
@@ -269,7 +269,7 @@ PSICOSE NODE
 ```
 
 Address = `u8`, data = `u8`, memory = 256 bytes. This is not a VM yet.
-It is the state ceiling that 0.2.1 refuses to exceed.
+It is the state ceiling that 0.2.2 refuses to exceed.
 
 ## 10. Windowed (`N ≤ 8`)
 

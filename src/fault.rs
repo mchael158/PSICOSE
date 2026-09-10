@@ -227,12 +227,12 @@ mod tests {
         let inner = MockTransport::with_incoming(&[]);
         let mut f = FaultyTransport::on_write(inner, FaultPolicy::drop_first(1));
         for b in [1u8, 2, 3, 4] {
-            f.write_byte(b).unwrap();
+            assert_eq!(f.write_byte(b), Ok(()));
         }
         assert_eq!(f.writes(), 1);
         assert!(f.inner().written().is_empty());
         for b in [5u8, 6, 7, 8] {
-            f.write_byte(b).unwrap();
+            assert_eq!(f.write_byte(b), Ok(()));
         }
         assert_eq!(f.inner().written(), [5, 6, 7, 8]);
     }
@@ -241,10 +241,10 @@ mod tests {
     fn corrupt_every_flips_crc_byte() {
         let inner = MockTransport::with_incoming(&[]);
         let mut f = FaultyTransport::on_write(inner, FaultPolicy::corrupt_every(1));
-        f.write_byte(0x01).unwrap();
-        f.write_byte(0x00).unwrap();
-        f.write_byte(0x42).unwrap();
-        f.write_byte(0x00).unwrap();
+        assert_eq!(f.write_byte(0x01), Ok(()));
+        assert_eq!(f.write_byte(0x00), Ok(()));
+        assert_eq!(f.write_byte(0x42), Ok(()));
+        assert_eq!(f.write_byte(0x00), Ok(()));
         let w = f.inner().written();
         assert_eq!(w.len(), 4);
         assert_eq!(w[3], 0xFF);

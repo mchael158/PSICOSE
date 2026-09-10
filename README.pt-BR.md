@@ -37,7 +37,7 @@ A maioria dos protocolos segura a mensagem inteira na memória. A PSICOSE
 não: move um byte de payload por vez. A memória é alguns frames na
 stack — 4 bytes de config ou um arquivo de 4 GB.
 
-## Estado (0.2.1 — experimental)
+## Estado (0.2.2 — experimental)
 
 - **protocol** — CRC-8, frame de 4 bytes, validação semântica, wraparound
   de `SEQ`, assembler, `OutBuf`.
@@ -80,13 +80,35 @@ JPEG  Arquivo  Flash  Sensor  firmware.bin  o seu struct
 usam o mesmo caminho: implemente `ByteSource` / `ByteSink` (ou use
 `SliceSource` / `SliceSink` quando o buffer já é seu).
 
-## Exemplo
+## Exemplos
+
+Problemas reais, executáveis. O "UART" e o "rádio" são anéis na
+memória; no campo você troca o `End` pelo driver.
+
+```sh
+cargo run --example jpeg_over_uart
+cargo run --example firmware_flash
+cargo run --example sensor_telemetry
+cargo run --example radio_windowed
+```
+
+| Exemplo | Problema | O que a PSICOSE vê |
+| --- | --- | --- |
+| `jpeg_over_uart` | RAM de câmera OV2640 → arquivo no host, via UART | bytes JPEG |
+| `firmware_flash` | `firmware.bin` no host → flash NOR do MCU, 1 byte programado por vez | bytes do arquivo |
+| `sensor_telemetry` | DHT22 + ADC de bateria, struct empacotado no rádio lento | amostra de 8 bytes |
+| `radio_windowed` | dump de 300 bytes de EEPROM; o primeiro DATA some | bytes, janela `N=8` |
+
+`firmware_flash` implementa `ByteSource` em `std::fs::File` — é o
+padrão para um binário de 4 GB. A crate continua sem possuir o arquivo.
+
+## Exemplo (envelope do frame)
 
 ```rust
 use psicose::Frame;
 
 let frame = Frame::data(0, 0xAA);
-assert_eq!(Frame::from_bytes(frame.to_bytes()).unwrap(), frame);
+assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
 ```
 
 ## Testes

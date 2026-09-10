@@ -210,21 +210,33 @@ mod tests {
         }
     }
 
-    fn ready(step: Result<Step<u8>, core::convert::Infallible>) -> (usize, u8) {
-        let step = step.unwrap();
-        match step.tick {
-            Tick::Ready(v) => (step.id.index(), v),
-            other => panic!("expected Ready, got {other:?}"),
+    fn ready(step: Option<Result<Step<u8>, core::convert::Infallible>>) -> (usize, u8) {
+        match step {
+            Some(Ok(step)) => match step.tick {
+                Tick::Ready(v) => (step.id.index(), v),
+                tick => {
+                    assert_eq!(tick, Tick::Ready(0));
+                    (0, 0)
+                }
+            },
+            other => {
+                assert!(other.is_some());
+                (0, 0)
+            }
         }
     }
 
     #[test]
     fn spawn_assigns_stable_ids_in_slot_order() {
         let mut sys: System<Counter, 3> = System::new();
-        let a = sys.spawn(Counter { next: 0, left: 1 }).unwrap();
-        let b = sys.spawn(Counter { next: 0, left: 1 }).unwrap();
-        assert_eq!(a.index(), 0);
-        assert_eq!(b.index(), 1);
+        assert_eq!(
+            sys.spawn(Counter { next: 0, left: 1 }).map(|id| id.index()),
+            Ok(0)
+        );
+        assert_eq!(
+            sys.spawn(Counter { next: 0, left: 1 }).map(|id| id.index()),
+            Ok(1)
+        );
         assert_eq!(sys.live(), 2);
         assert_eq!(sys.capacity(), 3);
     }
@@ -246,54 +258,68 @@ mod tests {
     #[test]
     fn round_robin_visits_in_spawn_order() {
         let mut sys: System<Counter, 2> = System::new();
-        sys.spawn(Counter { next: 10, left: 2 }).unwrap();
-        sys.spawn(Counter { next: 20, left: 2 }).unwrap();
+        assert!(sys.spawn(Counter { next: 10, left: 2 }).is_ok());
+        assert!(sys.spawn(Counter { next: 20, left: 2 }).is_ok());
 
-        assert_eq!(ready(sys.tick().unwrap()), (0, 10));
-        assert_eq!(ready(sys.tick().unwrap()), (1, 20));
-        assert_eq!(ready(sys.tick().unwrap()), (0, 11));
-        assert_eq!(ready(sys.tick().unwrap()), (1, 21));
+        assert_eq!(ready(sys.tick()), (0, 10));
+        assert_eq!(ready(sys.tick()), (1, 20));
+        assert_eq!(ready(sys.tick()), (0, 11));
+        assert_eq!(ready(sys.tick()), (1, 21));
     }
 
     #[test]
     fn done_actor_is_retired_and_skipped() {
         let mut sys: System<Counter, 2> = System::new();
-        sys.spawn(Counter { next: 1, left: 1 }).unwrap();
-        sys.spawn(Counter { next: 2, left: 3 }).unwrap();
+        assert!(sys.spawn(Counter { next: 1, left: 1 }).is_ok());
+        assert!(sys.spawn(Counter { next: 2, left: 3 }).is_ok());
 
-        assert_eq!(ready(sys.tick().unwrap()), (0, 1));
-        let step = sys.tick().unwrap().unwrap();
-        assert_eq!(step.id.index(), 1);
-        assert_eq!(step.tick, Tick::Ready(2));
+        assert_eq!(ready(sys.tick()), (0, 1));
+        assert_eq!(
+            sys.tick().map(|r| r.map(|s| s.tick)),
+            Some(Ok(Tick::Ready(2)))
+        );
 
-        let done = sys.tick().unwrap().unwrap();
-        assert_eq!(done.id.index(), 0);
-        assert_eq!(done.tick, Tick::Done);
+        assert_eq!(
+            sys.tick().map(|r| r.map(|s| s.tick)),
+            Some(Ok(Tick::Done))
+        );
         assert_eq!(sys.live(), 1);
 
-        assert_eq!(ready(sys.tick().unwrap()), (1, 3));
-        assert_eq!(ready(sys.tick().unwrap()), (1, 4));
-        assert_eq!(sys.tick().unwrap().unwrap().tick, Tick::Done);
+        assert_eq!(ready(sys.tick()), (1, 3));
+        assert_eq!(ready(sys.tick()), (1, 4));
+        assert_eq!(
+            sys.tick().map(|r| r.map(|s| s.tick)),
+            Some(Ok(Tick::Done))
+        );
         assert!(sys.tick().is_none());
     }
 
     #[test]
     fn pending_is_not_idle() {
         let mut sys: System<Pending, 1> = System::new();
-        sys.spawn(Pending).unwrap();
+        assert!(sys.spawn(Pending).is_ok());
         assert!(!sys.is_idle());
-        assert_eq!(sys.tick().unwrap().unwrap().tick, Tick::Pending);
+        assert_eq!(
+            sys.tick().map(|r| r.map(|s| s.tick)),
+            Some(Ok(Tick::Pending))
+        );
         assert_eq!(sys.live(), 1);
     }
 
     #[test]
     fn error_is_propagated_and_actor_stays_scheduled() {
         let mut sys: System<Fail, 1> = System::new();
-        let id = sys.spawn(Fail { remaining_ok: 1 }).unwrap();
-        assert_eq!(sys.tick().unwrap().unwrap().tick, Tick::Pending);
-        assert_eq!(sys.tick().unwrap().unwrap_err(), 9);
-        assert_eq!(sys.live(), 1);
-        assert!(sys.get(id).is_some());
-        assert_eq!(sys.tick().unwrap().unwrap_err(), 9);
+        let spawned = sys.spawn(Fail { remaining_ok: 1 });
+        assert!(spawned.is_ok());
+        if let Ok(id) = spawned {
+            assert_eq!(
+                sys.tick().map(|r| r.map(|s| s.tick)),
+                Some(Ok(Tick::Pending))
+            );
+            assert_eq!(sys.tick(), Some(Err(9)));
+            assert_eq!(sys.live(), 1);
+            assert!(sys.get(id).is_some());
+            assert_eq!(sys.tick(), Some(Err(9)));
+        }
     }
 }

@@ -18,3 +18,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - run: cargo test
+      - run: cargo run --example jpeg_over_uart
+      - run: cargo run --example firmware_flash
+      - run: cargo run --example sensor_telemetry
+      - run: cargo run --example radio_windowed

@@ -62,7 +62,6 @@ impl Default for FrameAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::FrameType;
 
     #[test]
     fn yields_none_until_full() {
@@ -71,10 +70,10 @@ mod tests {
         assert!(asm.push(bytes[0]).is_none());
         assert!(asm.push(bytes[1]).is_none());
         assert!(asm.push(bytes[2]).is_none());
-        let frame = asm.push(bytes[3]).unwrap().unwrap();
-        assert_eq!(frame.frame_type(), FrameType::Data);
-        assert_eq!(frame.seq(), 3);
-        assert_eq!(frame.payload(), 0x55);
+        assert_eq!(
+            asm.push(bytes[3]),
+            Some(Ok(Frame::data_frame(3, 0x55)))
+        );
     }
 
     #[test]
@@ -90,7 +89,7 @@ mod tests {
         for b in second {
             last = asm.push(b);
         }
-        assert_eq!(last.unwrap().unwrap(), Frame::nack(2));
+        assert_eq!(last, Some(Ok(Frame::nack(2))));
     }
 
     #[test]
@@ -105,7 +104,7 @@ mod tests {
         for b in bytes {
             last = asm.push(b);
         }
-        assert_eq!(last.unwrap().unwrap(), Frame::ack(9));
+        assert_eq!(last, Some(Ok(Frame::ack(9))));
     }
 
     #[test] 
@@ -117,7 +116,7 @@ mod tests {
         for b in bytes {
             last = asm.push(b);
         }
-        assert!(last.unwrap().is_err());
+        assert!(matches!(last, Some(Err(_))));
 
         // Assembler must be usable again after an error.
         let ok = Frame::ack(5).to_bytes();
@@ -125,6 +124,6 @@ mod tests {
         for b in ok {
             last2 = asm.push(b);
         }
-        assert_eq!(last2.unwrap().unwrap(), Frame::ack(5));
+        assert_eq!(last2, Some(Ok(Frame::ack(5))));
     }
 }

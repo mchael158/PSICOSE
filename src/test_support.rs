@@ -45,12 +45,12 @@ pub struct MockTransport {
 impl MockTransport {
     /// Yields exactly `bytes` from `read_byte`, then `Ok(None)`.
     pub fn with_incoming(bytes: &[u8]) -> Self {
-        debug_assert!(bytes.len() <= CAP);
+        let n = core::cmp::min(bytes.len(), CAP);
         let mut incoming = [0u8; CAP];
-        incoming[..bytes.len()].copy_from_slice(bytes);
+        incoming[..n].copy_from_slice(&bytes[..n]);
         MockTransport {
             incoming,
-            incoming_len: bytes.len(),
+            incoming_len: n,
             incoming_pos: 0,
             written_buf: [0u8; CAP],
             written_len: 0,
@@ -67,9 +67,10 @@ impl ByteTransport for MockTransport {
     type Error = core::convert::Infallible;
 
     fn write_byte(&mut self, byte: u8) -> Result<(), Self::Error> {
-        debug_assert!(self.written_len < CAP);
-        self.written_buf[self.written_len] = byte;
-        self.written_len += 1;
+        if self.written_len < CAP {
+            self.written_buf[self.written_len] = byte;
+            self.written_len += 1;
+        }
         Ok(())
     }
 

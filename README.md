@@ -37,7 +37,7 @@ Most transfer protocols hold the whole message in memory. PSICOSE never
 does: it moves one payload byte at a time. Memory is a few frames on the
 stack, whether you send 4 bytes of config or a 4 GB file.
 
-## Status (0.2.1 — experimental)
+## Status (0.2.2 — experimental)
 
 - **protocol** — CRC-8, 4-byte frame, semantic validation, `SEQ`
   wraparound (`255 → 0`), assembler, `OutBuf` (one wire byte per poll).
@@ -81,13 +81,35 @@ JPEG  File  Flash  Sensor  firmware.bin  your struct
 same path: implement `ByteSource` / `ByteSink` (or use `SliceSource` /
 `SliceSink` when the caller already holds the buffer).
 
-## Example
+## Examples
+
+Runnable stand-ins for problems this crate is meant to solve. The "UART"
+and "radio" are in-memory rings; swap `End` for your driver.
+
+```sh
+cargo run --example jpeg_over_uart
+cargo run --example firmware_flash
+cargo run --example sensor_telemetry
+cargo run --example radio_windowed
+```
+
+| Example | Real problem | What PSICOSE sees |
+| --- | --- | --- |
+| `jpeg_over_uart` | OV2640-class camera RAM → host file over UART | JPEG bytes |
+| `firmware_flash` | Host `firmware.bin` → MCU NOR flash, 1 byte programmed at a time | file bytes |
+| `sensor_telemetry` | DHT22 + battery ADC packed struct over a slow radio | 8-byte sample |
+| `radio_windowed` | 300-byte EEPROM dump; first DATA frame dropped | bytes, window `N=8` |
+
+`firmware_flash` implements `ByteSource` on `std::fs::File` — that is the
+pattern for a 4 GB image. The crate still never owns the file.
+
+## Example (frame envelope)
 
 ```rust
 use psicose::Frame;
 
 let frame = Frame::data(0, 0xAA);
-assert_eq!(Frame::from_bytes(frame.to_bytes()).unwrap(), frame);
+assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
 ```
 
 ## Tests

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 — 2026-09-10
+
+- Library, tests, and docs no longer call `unwrap` / `expect` / `panic`.
+  Missing slots return `Pending` or `Err`; examples use `assert_eq!(…, Ok(…))`.
+- Runnable real-world examples: `jpeg_over_uart`, `firmware_flash`,
+  `sensor_telemetry`, `radio_windowed`.
+
 ## 0.2.1 — 2026-09-10
 
 - Application stream: `SliceSource` / `SliceSink`, `send_all` / `recv_all`

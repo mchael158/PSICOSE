@@ -63,8 +63,8 @@ mod tests {
     #[test]
     fn scripted_actor_emits_ready_then_done() {
         let mut actor = Once { fired: false };
-        assert_eq!(actor.tick().unwrap(), Tick::Ready(7));
-        assert_eq!(actor.tick().unwrap(), Tick::Done);
-        assert_eq!(actor.tick().unwrap(), Tick::Done);
+        assert_eq!(actor.tick(), Ok(Tick::Ready(7)));
+        assert_eq!(actor.tick(), Ok(Tick::Done));
+        assert_eq!(actor.tick(), Ok(Tick::Done));
     }
 }

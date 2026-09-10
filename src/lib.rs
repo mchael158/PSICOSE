@@ -60,17 +60,19 @@
 //! ```
 //! use psicose::Frame;
 //! let frame = Frame::data(0, 0xAA);
-//! assert_eq!(Frame::from_bytes(frame.to_bytes()).unwrap(), frame);
+//! assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
 //! ```
 //!
 //! ## What's here vs. what's next
 //!
-//! This is **0.2.1**: stop-and-wait (1B) plus selective-repeat
+//! This is **0.2.2**: stop-and-wait (1B) plus selective-repeat
 //! [`window`] (`N ≤ 8`, `[Option<T>; N]`, no heap, no `std`), plus
 //! [`stream`] (`SliceSource` / `SliceSink` / `send_all` / `recv_all`).
 //! File and UART/SPI stay out — you implement [`ByteSource`] on top of
-//! them. The formal wire spec ships as `PROTOCOL.md` (English) and
-//! `PROTOCOL.pt-BR.md` in the crate.
+//! them. Runnable stand-ins live in `examples/` (`jpeg_over_uart`,
+//! `firmware_flash`, `sensor_telemetry`, `radio_windowed`). The formal
+//! wire spec ships as `PROTOCOL.md` (English) and `PROTOCOL.pt-BR.md`
+//! in the crate.
 //!
 //! **Payload is 1 byte. The frame is 4 bytes.** `DATA` is the only
 //! application bit; `TYPE|SEQ|CRC` are overhead (25% before ACKs, 12.5%

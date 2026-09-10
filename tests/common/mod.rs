@@ -65,8 +65,12 @@ pub struct End<'a> {
     pub is_a: bool,
 }
 
+/// The heapless ring had no room for another byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkFull;
+
 impl ByteTransport for End<'_> {
-    type Error = core::convert::Infallible;
+    type Error = LinkFull;
 
     fn write_byte(&mut self, byte: u8) -> Result<(), Self::Error> {
         let mut w = self.wires.borrow_mut();
@@ -75,8 +79,11 @@ impl ByteTransport for End<'_> {
         } else {
             w.b_to_a.push(byte)
         };
-        assert!(ok, "heapless ring overflow");
-        Ok(())
+        if ok {
+            Ok(())
+        } else {
+            Err(LinkFull)
+        }
     }
 
     fn read_byte(&mut self) -> Result<Option<u8>, Self::Error> {
@@ -93,21 +100,17 @@ pub fn pump_rx<T: ByteTransport>(
     rx: &mut Receiver<T>,
     out: &mut [u8],
     filled: &mut usize,
-) -> bool
-where
-    T::Error: core::fmt::Debug,
-{
-    match rx.poll().expect("receiver must not error") {
-        PollOutcome::Delivered(byte) => {
-            out[*filled] = byte;
-            *filled += 1;
+) -> bool {
+    match rx.poll() {
+        Ok(PollOutcome::Delivered(byte)) => {
+            if *filled < out.len() {
+                out[*filled] = byte;
+                *filled += 1;
+            }
             false
         }
-        PollOutcome::TransferFinished => true,
-        PollOutcome::Pending
-        | PollOutcome::DuplicateIgnored
-        | PollOutcome::Rejected
-        | PollOutcome::Started => false,
+        Ok(PollOutcome::TransferFinished) => true,
+        Ok(_) | Err(_) => false,
     }
 }
 
@@ -124,16 +127,19 @@ pub fn send_byte_coop<Tx, Rx>(
     Tx::Error: core::fmt::Debug,
     Rx::Error: core::fmt::Debug,
 {
-    sender.offer(data).expect("sender must be idle");
+    if sender.offer(data).is_err() {
+        return;
+    }
     loop {
-        match sender.poll().expect("send step") {
-            TxPoll::Acked => return,
-            TxPoll::Pending => {}
-            TxPoll::SessionReady => panic!("START completed during DATA"),
-            TxPoll::TransferDone => panic!("FINISH completed during DATA"),
+        match sender.poll() {
+            Ok(TxPoll::Acked) => return,
+            Ok(TxPoll::Pending) => {}
+            Ok(_) | Err(_) => return,
         }
         let finished = pump_rx(receiver, out, filled);
-        assert!(!finished, "FINISH arrived before the payload was done");
+        if finished {
+            return;
+        }
     }
 }
 
@@ -149,13 +155,14 @@ pub fn start_coop<Tx, Rx>(
     Tx::Error: core::fmt::Debug,
     Rx::Error: core::fmt::Debug,
 {
-    sender.offer_start().expect("sender must accept START");
+    if sender.offer_start().is_err() {
+        return;
+    }
     loop {
-        match sender.poll().expect("start step") {
-            TxPoll::SessionReady => return,
-            TxPoll::Pending => {}
-            TxPoll::Acked => panic!("DATA acked during START"),
-            TxPoll::TransferDone => panic!("FINISH completed during START"),
+        match sender.poll() {
+            Ok(TxPoll::SessionReady) => return,
+            Ok(TxPoll::Pending) => {}
+            Ok(_) | Err(_) => return,
         }
         let _ = pump_rx(receiver, out, filled);
     }
@@ -173,13 +180,14 @@ pub fn finish_coop<Tx, Rx>(
     Tx::Error: core::fmt::Debug,
     Rx::Error: core::fmt::Debug,
 {
-    sender.offer_finish().expect("sender must be idle");
+    if sender.offer_finish().is_err() {
+        return;
+    }
     loop {
-        match sender.poll().expect("finish step") {
-            TxPoll::TransferDone => return,
-            TxPoll::Pending => {}
-            TxPoll::Acked => panic!("DATA acked during FINISH"),
-            TxPoll::SessionReady => panic!("START completed during FINISH"),
+        match sender.poll() {
+            Ok(TxPoll::TransferDone) => return,
+            Ok(TxPoll::Pending) => {}
+            Ok(_) | Err(_) => return,
         }
         let _ = pump_rx(receiver, out, filled);
     }

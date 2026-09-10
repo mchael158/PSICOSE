@@ -1,4 +1,4 @@
-# PSICOSE-1B — protocolo formal (0.2.1)
+# PSICOSE-1B — protocolo formal (0.2.2)
 
 [English](PROTOCOL.md) · [Português (Brasil)](PROTOCOL.pt-BR.md)
 
@@ -273,7 +273,7 @@ PSICOSE NODE
 ```
 
 Endereço = `u8`, dado = `u8`, memória = 256 bytes. Ainda não é uma VM;
-é o teto de estado que o 0.2.1 se recusa a ultrapassar.
+é o teto de estado que o 0.2.2 se recusa a ultrapassar.
 
 ## 10. Janela (`N ≤ 8`)
 

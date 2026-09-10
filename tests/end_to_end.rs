@@ -172,7 +172,7 @@ fn any_blob_is_just_bytes_through_a_source() {
 
     let mut got = [0u8; 8];
     let mut n = 0usize;
-    while let Some(byte) = src.read_byte().unwrap() {
+    while let Ok(Some(byte)) = src.read_byte() {
         send_byte_coop(&mut sender, &mut receiver, byte, &mut got, &mut n);
     }
     finish_coop(&mut sender, &mut receiver, &mut got, &mut n);
