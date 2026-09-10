@@ -37,7 +37,7 @@ Most transfer protocols hold the whole message in memory. PSICOSE never
 does: it moves one payload byte at a time. Memory is a few frames on the
 stack, whether you send 4 bytes of config or a 4 GB file.
 
-## Status (0.2.0 — experimental)
+## Status (0.2.1 — experimental)
 
 - **protocol** — CRC-8, 4-byte frame, semantic validation, `SEQ`
   wraparound (`255 → 0`), assembler, `OutBuf` (one wire byte per poll).
@@ -45,6 +45,10 @@ stack, whether you send 4 bytes of config or a 4 GB file.
 - **window** — selective-repeat `WindowedSender<_, N>` /
   `WindowedReceiver<_, N>`, `1 ≤ N ≤ 8`. Aliases: `W8Sender`, `W8Receiver`.
 - **transport** — `ByteTransport` / `ByteSource` / `ByteSink`.
+- **stream** — any bytes through the envelope: `SliceSource` /
+  `SliceSink`, `send_all` / `recv_all` (stop-and-wait and windowed).
+  JPEG, a file, flash, a sensor, or `struct` bytes are all just a
+  `ByteSource`. The frame is not the application type.
 - **fault** — `FaultyTransport` for adversarial tests.
 - **actors** — cooperative `System` for N links on one thread.
 
@@ -56,6 +60,26 @@ Not yet: SessionId in the 4-byte frame, UART/SPI/CAN/radio, `File`.
 - No `Vec`, `String`, `Box`, `Rc`/`Arc`, no allocator, no async runtime
 - Every public type has a size known at compile time
 - Reliability is the protocol's job, never the application's
+
+## Any data, not just frames
+
+The 4-byte frame is the **envelope**. Application data is always bytes:
+
+```text
+JPEG  File  Flash  Sensor  firmware.bin  your struct
+  └───────┴───────┴────────┴──────────────┘
+                    │
+               ByteSource     ← you implement this
+                    │ 1 byte at a time
+                    ▼
+                 PSICOSE      ← never owns the blob
+                    │
+                ByteSink
+```
+
+`psicose::File` is not in this crate. A JPEG and a 4 GB file use the
+same path: implement `ByteSource` / `ByteSink` (or use `SliceSource` /
+`SliceSink` when the caller already holds the buffer).
 
 ## Example
 
