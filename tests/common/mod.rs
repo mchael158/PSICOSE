@@ -2,9 +2,7 @@
 
 use core::cell::RefCell;
 
-use psicose::rx::{PollOutcome, Receiver};
-use psicose::transport::ByteTransport;
-use psicose::tx::{Sender, TxPoll};
+use psicose::{ByteTransport, PollOutcome, Receiver, Sender, TxPoll};
 
 pub const RING: usize = 64;
 
@@ -109,8 +107,8 @@ pub fn pump_rx<T: ByteTransport>(
             }
             false
         }
-        Ok(PollOutcome::TransferFinished) => true,
-        Ok(_) | Err(_) => false,
+        Ok(outcome) => outcome.is_closed(),
+        Err(_) => false,
     }
 }
 
@@ -186,6 +184,31 @@ pub fn finish_coop<Tx, Rx>(
     loop {
         match sender.poll() {
             Ok(TxPoll::TransferDone) => return,
+            Ok(TxPoll::Pending) => {}
+            Ok(_) | Err(_) => return,
+        }
+        let _ = pump_rx(receiver, out, filled);
+    }
+}
+
+#[allow(dead_code)]
+pub fn abort_coop<Tx, Rx>(
+    sender: &mut Sender<Tx>,
+    receiver: &mut Receiver<Rx>,
+    out: &mut [u8],
+    filled: &mut usize,
+) where
+    Tx: ByteTransport,
+    Rx: ByteTransport,
+    Tx::Error: core::fmt::Debug,
+    Rx::Error: core::fmt::Debug,
+{
+    if sender.offer_abort().is_err() {
+        return;
+    }
+    loop {
+        match sender.poll() {
+            Ok(TxPoll::Aborted) => return,
             Ok(TxPoll::Pending) => {}
             Ok(_) | Err(_) => return,
         }

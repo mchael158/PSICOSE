@@ -1,4 +1,4 @@
-# PSICOSE-1B — formal protocol (0.2.2)
+# PSICOSE-1B — formal protocol (0.2.3)
 
 [English](PROTOCOL.md) · [Português (Brasil)](PROTOCOL.pt-BR.md)
 
@@ -6,7 +6,34 @@ A `no_std`, heapless transport machine. This file is the specification.
 The code in `src/` is the implementation. If they diverge, the
 adversarial tests in `tests/hostile.rs` decide.
 
-**Status:** experimental reliable byte transport. Not a final protocol.
+**Status:** experimental reliable byte transport plus a P2P layer that
+rides the same 4-byte frame as payload. Not a final protocol.
+
+```
+                    APPLICATION
+                         │
+              ┌──────────▼──────────┐
+              │     p2p (here)      │
+              │ PeerId / Session    │
+              │ Stream / Message    │
+              └──────────┬──────────┘
+                         │ payload bytes
+              ┌──────────▼──────────┐
+              │      transport      │
+              │  ACK / NACK / CRC   │
+              │  START / FINISH /   │
+              │  ABORT / Pump       │
+              └──────────┬──────────┘
+                         │
+                   ByteTransport
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+        UART           TCP/UDP        Radio
+```
+
+The transport does not know what a peer, a stream, or a forum post is.
+The P2P layer does not grow the frame.
 
 ## 1. Units
 
@@ -47,6 +74,7 @@ offset  0        1        2        3
 | Nack | `0x03` | rejected sequence | `0x00` |
 | Start | `0x04` | `0x00` | `0x00` |
 | Finish | `0x05` | current TX sequence | `0x00` |
+| Abort | `0x06` | `0x00` | `0x00` |
 
 CRC-8: poly `0x07`, init `0x00`, no reflection, no xor-out, over
 `TYPE || SEQ || DATA`.
@@ -55,11 +83,11 @@ CRC-8: poly `0x07`, init `0x00`, no reflection, no xor-out, over
 
 CRC-valid ≠ semantically valid. A `Frame` exists only if **both** hold.
 
-Control frames (`ACK`, `NACK`, `START`, `FINISH`) must have `DATA = 0`.
-`START` must have `SEQ = 0`.
+Control frames (`ACK`, `NACK`, `START`, `FINISH`, `ABORT`) must have
+`DATA = 0`. `START` and `ABORT` must have `SEQ = 0`.
 
 Public constructors are `Frame::data`, `Frame::ack`, `Frame::nack`,
-`Frame::start`, and `Frame::finish`. There is no public `Frame::new`.
+`Frame::start`, `Frame::finish`, and `Frame::abort`. There is no public `Frame::new`.
 `Frame::from_bytes` rejects a CRC-valid frame that breaks those rules
 (`FrameError::InvalidSemantics`). There is no `unchecked` path.
 
@@ -71,7 +99,7 @@ Public constructors are `Frame::data`, `Frame::ack`, `Frame::nack`,
 
 `previous(0) == 255`. Wraparound is part of the protocol, not an error.
 
-## 4. Session (START / DATA / FINISH)
+## 4. Session (START / DATA / FINISH / ABORT)
 
 A transfer is an explicit session:
 
@@ -105,7 +133,36 @@ After `Finished`:
 - late `DATA` is ignored (not delivered, not NACKed)
 - a corrupt frame is ignored (not NACKed)
 - a `FINISH` with the closed sequence is re-ACKed
+- `ABORT` is ignored (the session is already closed)
 - `START` opens a new session
+
+`ABORT` is a first-class frame (`TYPE = 0x06`). It does not grow the
+envelope. There is no out-of-band cancel: every session event is the
+same `TYPE | SEQ | DATA | CRC` stream.
+
+```
+TX                              RX
+──                              ──
+ABORT  ─────────────────────►   ACK 0, cancel, discard pending DATA
+       ◄─────────────────────   ACK 0
+```
+
+`ABORT` is reliable like `FINISH`: the sender waits for `ACK(0)`. A lost
+`ABORT` is retried. A duplicate `ABORT` is re-ACKed.
+
+Semantics:
+
+- TX `offer_abort` drops any in-flight DATA/START/FINISH, including a
+  frame mid-write or mid-retry, and sends `ABORT` (`SEQ = 0`).
+- An `ABORT` received while TX is retransmitting wins: DATA in flight
+  is discarded.
+- RX ACKs `0`, latches aborted, resets `expected_seq` to 0.
+- After abort: late DATA and corrupt frames are ignored (same latch as
+  FINISH). `START` reopens the session at seq 0, including wrap
+  `255 → 0`.
+- A peer `ABORT` observed on the TX control path locally cancels
+  without sending a second `ABORT`. The RX side of the same endpoint
+  is the one that writes the ACK.
 
 A session identifier is **not** in the 4-byte frame. A future version
 may negotiate one through extra frames after `START`. Do not grow the
@@ -134,8 +191,9 @@ retransmit **must not** deliver the byte again. `DuplicateIgnored` +
 re-ACK.
 
 Bad CRC, TYPE, or semantics on RX is **not** an application error.
-NACK the current `expected`, return `PollOutcome::Rejected`, keep
-polling.
+NACK the current `expected`, keep polling. CRC failures return
+`PollOutcome::CrcRejected`; a wrong `SEQ` or bad TYPE/semantics
+returns `PollOutcome::Rejected`. Both send a NACK.
 
 ### Formal ACK/NACK on TX
 
@@ -155,7 +213,7 @@ polling.
                  ┌─────────┐
                  │  IDLE   │
                  └────┬────┘
-                      │ offer / offer_start / offer_finish
+                      │ offer / offer_start / offer_finish / offer_abort
                       ▼
                  ┌─────────┐
                  │ SENDING │
@@ -167,11 +225,11 @@ polling.
                       │
              ┌────────┼────────┐
              │        │        │
-         ACK(cur)  NACK(cur)  TIMEOUT
+         ACK(cur)  NACK(cur)  TIMEOUT / peer ABORT
              │        │        │
              ▼        └────┬───┘
            IDLE            │
-      (or Finished)        ▼
+      (Finished/Aborted)   ▼
                        RETRYING
                            │
                            ▼
@@ -198,17 +256,18 @@ Foreign ACK/NACK and invalid frames stay in `WAIT_ACK`.
                  └─────┬──────┘
            ┌───────────┼───────────┐
            │           │           │
-         DATA        START       FINISH
-           │           │           │
-           ▼           ▼           ▼
-      ACK / NACK    ACK 0       ACK seq
-           │           │           │
-           ▼           ▼           ▼
-         IDLE        IDLE       FINISHED
+         DATA        START       FINISH      ABORT
+           │           │           │           │
+           ▼           ▼           ▼           ▼
+      ACK / NACK    ACK 0       ACK seq      ACK 0
+           │           │           │           │
+           ▼           ▼           ▼           ▼
+         IDLE        IDLE       FINISHED    ABORTED
 ```
 
 A duplicate `FINISH` after `FINISHED` is re-ACKed. `START` after
-`FINISHED` opens a new session.
+`FINISHED` or `ABORTED` opens a new session. `ABORT` after `FINISHED`
+is ignored.
 
 ## 7. Fault injection
 
@@ -221,8 +280,36 @@ A duplicate `FINISH` after `FINISHED` is re-ACKed. `START` after
 - **DROP NACK** — treated as silence; TX times out and retransmits
 - **DELAY DATA** — reads return `Ok(None)` for N ticks, then the frame
 - **DROP FINISH / FINISH ACK** — FINISH is retried until ACKed
+- **ABORT during DATA / retry** — abort wins; DATA in flight is dropped
+- **ABORT after FINISH** — ignored
+- **START after ABORT** — new session at seq 0, including `255 → 0`
 
 None of these modes may corrupt the stream seen by the `ByteSink`.
+
+## 7.1 Pump and SessionStats
+
+`Pump` is one cooperative step: `rx.poll()` then `tx.poll()`. It never
+loops inside `poll`. `Pump::send_all` is only that loop stacked by the
+caller. Scripted `stream::send_all` still expects ACKs on the sender's
+own transport.
+
+`SessionStats` lives on the pump (`Copy`, stack-only, no logging):
+
+| Field | Meaning |
+|-------|---------|
+| `bytes_delivered` | Payload bytes the RX delivered after writing the ACK |
+| `frames_sent` | Frames whose four bytes fully left the TX `OutBuf` |
+| `retries` | Times the sender entered retransmission |
+| `nacks` | NACKs generated by the receiver |
+| `duplicates` | Duplicate DATA re-ACKed without delivering |
+| `crc_errors` | CRC rejects (also counted in `nacks`) |
+| `ticks` | How many times `Pump::poll` was called |
+
+`PumpEvent` of one step, highest first: `Aborted` > `Completed` >
+`Received(u8)` > `Sent` > `Progress` > `Idle`.
+
+CRC failures return `PollOutcome::CrcRejected`; a wrong `SEQ` or bad
+TYPE/semantics return `PollOutcome::Rejected`. Both send a NACK.
 
 ## 8. ByteSource / ByteSink
 
@@ -259,17 +346,19 @@ The transport protocol is already an 8-bit register machine (`SEQ`,
 ```
 PSICOSE NODE
 0x00 ───── 0xEF    application scratch
-0xF0               TX sequence
-0xF1               RX sequence
-0xF2               TX retries
-0xF3               RX state
-0xF4               CRC state
-0xF5               timeout ticks
-0xF6 ───── 0xFF    reserved
+0xF0               TX_SEQ
+0xF1               RX_SEQ
+0xF2               BYTES_LO
+0xF3               BYTES_HI
+0xF4               RETRIES
+0xF5               NACKS
+0xF6               CRC_ERRORS
+0xF7               DUPLICATES
+0xF8 ───── 0xFF    reserved
 ```
 
 Address = `u8`, data = `u8`, memory = 256 bytes. This is not a VM yet.
-It is the state ceiling that 0.2.2 refuses to exceed.
+`SessionStats` is the software form of those registers.
 
 ## 10. Windowed (`N ≤ 8`)
 
@@ -288,16 +377,183 @@ A free slot is not enough: SEQ must stay inside that range.
 RX accepts SEQ in [expected, expected+N) and stores the payload.
 RX re-ACKs SEQ in [expected-N, expected) without delivering.
 RX delivers only the in-order prefix of the buffer.
-START / FINISH remain stop-and-wait (window must be empty to FINISH).
-FINISH still requires SEQ == expected (no holes).
+START / FINISH / ABORT remain stop-and-wait (window must be empty to
+FINISH). ABORT clears the window. FINISH still requires SEQ == expected
+(no holes).
 ```
 
 `WindowFull` means: poll until an ACK frees a slot, then offer again.
 
-## 11. Out of scope here
+## 11. P2P layer (`p2p` module)
+
+Same crate. Same `no_std` / heapless / no-`unsafe` budget. Identity,
+sessions, streams, and messages are **payload bytes**. The 4-byte frame
+does not change and nothing of this layer enters it.
+
+Start from `psicose::prelude::*`. `PeerSession` never touches a
+transport: it produces and consumes bytes. The caller moves them with
+`Pump`, `send_bytes`, or anything else. `PeerSession` is ≤ 128 bytes.
+
+### 11.1 PeerId
+
+64-bit identity (`[u8; 8]`). Construct with `PeerId::from([u8; 8])`.
+How the bytes are generated (random, hash of a key, serial) is the
+application's business. The wire frame does not carry it.
+
+### 11.2 Hello (12 payload bytes)
+
+Sent as ordinary DATA right after START:
+
+```
+┌────────────┬─────────┬────────────┬──────────────┐
+│ PeerId (8) │ ver (1) │ window (1) │ features (2) │
+└────────────┴─────────┴────────────┴──────────────┘
+```
+
+`SessionConfig` is the last 4 bytes: `ver | window | features_hi |
+features_lo`. Version `0` and window outside `1..=8` are rejected
+(`HandshakeError`). `max_window` is clamped into `1..=8` on construct.
+`SessionConfig::DEFAULT` is version 1, window 8, `STREAM`.
+`SessionConfig::offer(4, features)` fills the version for you.
+
+### 11.3 Capabilities (`u16`, big-endian in the hello)
+
+CRC is **not** a capability. The transport frame always carries it.
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0 | `WINDOW` | Selective-repeat (`N ≤ 8`) |
+| 1 | `STREAM` | Logical streams over the session |
+| 2 | `FORUM` | Forum application messages |
+| 3 | `COMPRESSION` | Payload compression (above the transport) |
+| 4 | `ENCRYPTION` | Payload encryption (above the transport) |
+| 5 | `FRAGMENTATION` | Message fragmentation (`Fragmenter`) |
+
+Unknown bits are kept as-is and die in the intersection with a peer
+that does not set them.
+
+Negotiation is deterministic and has no extra round: min version, min
+window, intersection of feature bits. Both ends compute the same
+result. In code: `Capabilities::STREAM | Capabilities::WINDOW`.
+
+### 11.4 PeerSession states
+
+```
+Disconnected ──connect()──► Connecting ──on_hello()──► Established
+     ▲                                                     │
+     │                                                close() / abort()
+     └── closed() ◄── Closing ◄────────────────────────────┤
+                                                           ▼
+                                                        Aborted
+                                                           │
+                                                      connect()
+                                                           ▼
+                                                      Connecting
+```
+
+| State | Transport counterpart |
+|-------|------------------------|
+| `Disconnected` | Idle / after FINISH ACK |
+| `Connecting` | START in flight; our hello left |
+| `Established` | Hellos crossed; DATA may flow |
+| `Closing` | FINISH in flight |
+| `Aborted` | ABORT sent or received |
+
+`on_hello` returns `Ok(Some(reply))` on the accepting side (must send
+the reply) and `Ok(None)` when it completes a connect we initiated.
+`record_stats` copies `SessionStats` from the pump.
+
+### 11.5 Streams and messages
+
+Do not mix the counters:
+
+| Name | Size | Owner | Meaning |
+|------|------|-------|---------|
+| `SEQ` | `u8` | transport | which DATA frame |
+| `StreamId` | `u8` | application | which conversation |
+| `MessageId` | `u16` | application | which message in the stream |
+| `fragment` | `u16` | application | which piece of that message |
+
+Stream 0 is reserved for session control. Other mappings are
+application policy (forum, file, chat…).
+
+Message header — 7 payload bytes per fragment:
+
+```
+┌────────────┬────────────────┬──────────────┬───────────┬─────────┐
+│ stream (1) │ message id (2) │ fragment (2) │ flags (1) │ len (1) │
+└────────────┴────────────────┴──────────────┴───────────┴─────────┘
+```
+
+Flags bit 0 = last fragment. All other bits are reserved and rejected
+(`HeaderError::Flags`). Ids are big-endian.
+
+`Fragmenter` borrows the caller's payload and yields `(header, chunk)`
+until the last fragment. Chunk size `0` is treated as 1. An empty
+payload still yields one empty last fragment so the receiver sees the
+message exist. A 4 GB blob and an 11-byte post use the same iterator.
+
+### 11.6 PeerTable, PeerLink, Wire
+
+`PeerTable<N>` is `[Option<PeerEntry>; N]` with `1 ≤ N ≤ 8`. No `Vec`.
+
+| Call | Meaning |
+|------|---------|
+| `PeerTable::new(id)` | Empty table. Offers `SessionConfig::DEFAULT` (version 1, window 8, `STREAM`). |
+| `PeerTable::with(id, cfg)` | Same, explicit config. `SessionConfig::offer(4, features)` fills version for you. |
+| `table.connect()` | Takes a free slot, returns the hello. |
+| `table.accept(hello)` | Installs an incoming hello. |
+| `table.find(id)` | Locates a neighbor. |
+
+`PeerLink` is the live side: one `Pump` plus the hello state machine.
+
+```text
+connect:  START → hello(12) → wait hello → Established
+accept:   wait hello → START → hello(12) → Established
+```
+
+`PeerLink::poll(&mut table)` never loops. After `Established`, DATA is
+ordinary payload (`LinkEvent::Received`). Call `link.offer(byte)` —
+not `pump_mut().sender_mut().offer(byte)`.
+
+One physical duplex has **one** incoming stream. The sender needs
+ACK/NACK from it; the receiver needs DATA/START/FINISH/ABORT. Two
+readers on the same ring steal each other's bytes (the RX eats the
+ACK the TX is waiting for). `Wire` (`DuplexWire`) demuxes complete
+frames into a control lane (ACK/NACK → TX) and a payload lane
+(everything else, including a CRC miss → RX so it can NACK). The
+4-byte frame does not change.
+
+```rust
+use psicose::prelude::*;
+
+let wire = Wire::new();
+let (pump_a, pump_b) = wire.pumps();
+
+let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
+let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+
+let mut a = match PeerLink::connect(&mut alice, pump_a) {
+    Ok(link) => link,
+    Err(_) => return,
+};
+let mut b = PeerLink::accept(&bob, pump_b);
+let _ = (a.poll(&mut alice), b.poll(&mut bob));
+```
+
+A real UART driver does the same split: `Pump::on(tx, rx)`.
+
+### 11.7 Not yet (applications of this layer)
+
+Routing, store-and-forward, gossip (`SeenSet<N>`), signatures, content
+hash, backpressure / priority. They stay out of the transport and out
+of the 4-byte frame.
+
+## 12. Out of scope here
 
 - SessionId inside the 4-byte frame
 - UART / SPI / CAN / radio
 - `psicose::File`
 
-Order: Windowed is here → concrete sources/sinks → real wire.
+Order: transport + P2P identity/session/stream are here → discovery /
+gossip → forum.

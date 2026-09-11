@@ -51,6 +51,15 @@ impl FrameAssembler {
         self.filled = 0;
         Some(result)
     }
+
+    /// The four bytes of the last completed candidate (valid or not).
+    ///
+    /// Meaningful only immediately after [`Self::push`] returned `Some`.
+    /// The assembler does not clear the buffer on reset, only the fill
+    /// count, so this is how a demux can still hand a CRC miss to RX.
+    pub const fn last_bytes(&self) -> [u8; FRAME_LEN] {
+        self.buf
+    }
 }
 
 impl Default for FrameAssembler {

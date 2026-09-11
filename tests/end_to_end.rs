@@ -8,7 +8,7 @@ use core::cell::RefCell;
 use psicose::tx::Sender;
 use psicose::ByteSource;
 
-use common::{finish_coop, send_byte_coop, start_coop, End, Wires};
+use common::{abort_coop, finish_coop, send_byte_coop, start_coop, End, Wires};
 
 #[test]
 fn delivers_bytes_in_order_across_a_sequence_wraparound() {
@@ -179,4 +179,30 @@ fn any_blob_is_just_bytes_through_a_source() {
 
     assert_eq!(src.remaining(), 0);
     assert_eq!(&got[..n], &blob);
+}
+
+#[test]
+fn abort_during_data_then_new_session() {
+    let wires = RefCell::new(Wires::new());
+    let mut sender = Sender::new(End {
+        wires: &wires,
+        is_a: true,
+    });
+    let mut receiver = psicose::rx::Receiver::new(End {
+        wires: &wires,
+        is_a: false,
+    });
+
+    let mut got = [0u8; 2];
+    let mut n = 0usize;
+    send_byte_coop(&mut sender, &mut receiver, 0x10, &mut got, &mut n);
+    abort_coop(&mut sender, &mut receiver, &mut got, &mut n);
+    assert_eq!(sender.state(), psicose::tx::TxState::Aborted);
+
+    start_coop(&mut sender, &mut receiver, &mut got, &mut n);
+    send_byte_coop(&mut sender, &mut receiver, 0x20, &mut got, &mut n);
+    finish_coop(&mut sender, &mut receiver, &mut got, &mut n);
+
+    assert_eq!(got[n - 1], 0x20);
+    assert_eq!(receiver.expected_seq(), 1);
 }

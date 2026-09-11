@@ -26,7 +26,7 @@ Eficiência máxima antes dos ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK):
 psicose = "0.2"
 ```
 
-Sem features, sem dependências. MSRV: Rust 1.75.
+Sem features, sem dependências. MSRV: Rust 1.75 (`rust-toolchain.toml`).
 
 Docs: [docs.rs/psicose](https://docs.rs/psicose) · spec:
 [`PROTOCOL.md`](PROTOCOL.md) ([pt-BR](PROTOCOL.pt-BR.md))
@@ -37,11 +37,14 @@ A maioria dos protocolos segura a mensagem inteira na memória. A PSICOSE
 não: move um byte de payload por vez. A memória é alguns frames na
 stack — 4 bytes de config ou um arquivo de 4 GB.
 
-## Estado (0.2.2 — experimental)
+## Estado (0.2.3 — experimental)
 
 - **protocol** — CRC-8, frame de 4 bytes, validação semântica, wraparound
   de `SEQ`, assembler, `OutBuf`.
-- **tx / rx** — stop-and-wait. `START` / `FINISH` esperam ACK.
+- **tx / rx** — stop-and-wait. `START` / `FINISH` / `ABORT` esperam ACK.
+- **pump** — `Pump` cooperativa (`rx.poll` depois `tx.poll`, sem loop
+  interno) + `SessionStats` (`bytes_delivered`, `frames_sent`,
+  `retries`, `nacks`, `duplicates`, `crc_errors`, `ticks`).
 - **window** — selective-repeat `N ≤ 8`. Aliases: `W8Sender`, `W8Receiver`.
 - **transport** — `ByteTransport` / `ByteSource` / `ByteSink`.
 - **stream** — qualquer byte pelo envelope: `SliceSource` / `SliceSink`,
@@ -50,8 +53,87 @@ stack — 4 bytes de config ou um arquivo de 4 GB.
   não é o tipo da aplicação.
 - **fault** — `FaultyTransport`.
 - **actors** — `System` cooperativo.
+- **p2p** — mesma crate, mesmo orçamento. `use psicose::prelude::*`. Veja abaixo.
 
-Ainda não: SessionId no frame, UART/SPI/CAN/rádio, `File`.
+Ainda não: roteamento / gossip / store-and-forward, UART/SPI/CAN/rádio,
+`File`.
+
+## Camadas
+
+```text
+                    APLICAÇÃO
+                         │
+              ┌──────────▼──────────┐
+              │         p2p         │
+              │ PeerId / Session    │
+              │ Stream / Message    │
+              └──────────┬──────────┘
+                         │ bytes de payload
+              ┌──────────▼──────────┐
+              │      transporte     │
+              │  TYPE|SEQ|DATA|CRC  │
+              │  START/FINISH/ABORT │
+              │  Pump / Stats       │
+              └──────────┬──────────┘
+                         │
+                   ByteTransport
+```
+
+O transporte não sabe o que é peer ou post de fórum. A camada P2P não
+aumenta o frame de 4 bytes.
+
+## API
+
+```rust
+use psicose::prelude::*;
+```
+
+| Você escreve | Significado |
+| --- | --- |
+| `PeerId::from([0xAA; 8])` | Identidade de 8 bytes. Nunca no frame de 4 bytes. |
+| `PeerTable::<4>::new(id)` | Vizinhos, `1 ≤ N ≤ 8`. Default: janela 8 + `STREAM`. |
+| `PeerTable::with(id, cfg)` | Mesma tabela, `SessionConfig` explícito. |
+| `SessionConfig::offer(4, features)` | Config do hello. A versão é `PROTOCOL_VERSION`. |
+| `Capabilities::STREAM \| Capabilities::WINDOW` | Bits de feature. CRC não se negocia. |
+| `Wire::new().pumps()` | A↔B na memória. ACK/NACK → TX, DATA/START/FINISH/ABORT → RX. |
+| `Pump::on(tx, rx)` | O mesmo envelopamento num UART / SPI / rádio. |
+| `PeerLink::connect` / `accept` | START + hello de 12 bytes nos dois sentidos. |
+| `link.offer(byte)` | DATA depois de `Established`. |
+| `link.poll(&mut table)` | Um passo cooperativo. Nunca entra em loop. |
+| `PollOutcome::is_closed()` | FINISH ou ABORT encerrou a transferência. |
+
+O hello no fio tem 12 bytes de payload: `PeerId (8) | ver (1) | janela (1) | features (2)`.
+`PeerSession` é só contabilidade (≤ 128 B). `StreamId` / `MessageId` não
+são `SEQ`.
+
+```rust
+use psicose::prelude::*;
+
+let wire = Wire::new();
+let (pump_a, pump_b) = wire.pumps();
+
+let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
+let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+
+let mut a = match PeerLink::connect(&mut alice, pump_a) {
+    Ok(link) => link,
+    Err(_) => return,
+};
+let mut b = PeerLink::accept(&bob, pump_b);
+let _ = (a.poll(&mut alice), b.poll(&mut bob));
+```
+
+Para outro perfil:
+`PeerTable::with(id, SessionConfig::offer(4, Capabilities::STREAM | Capabilities::WINDOW))`.
+
+O envelope de 4 bytes continua só isto:
+
+```rust
+use psicose::Frame;
+
+let frame = Frame::data(0, 0xAA);
+assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
+```
 
 ## Inegociáveis
 
@@ -102,20 +184,14 @@ cargo run --example radio_windowed
 `firmware_flash` implementa `ByteSource` em `std::fs::File` — é o
 padrão para um binário de 4 GB. A crate continua sem possuir o arquivo.
 
-## Exemplo (envelope do frame)
-
-```rust
-use psicose::Frame;
-
-let frame = Frame::data(0, 0xAA);
-assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
-```
-
 ## Testes
 
 ```sh
-cargo +1.75.0 test
+cargo test
 ```
+
+Ver `tests/end_to_end.rs`, `tests/hostile.rs`, `tests/windowed.rs`,
+`tests/pump.rs` e `tests/p2p.rs`.
 
 ## Licença
 

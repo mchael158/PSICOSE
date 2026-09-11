@@ -8,7 +8,7 @@
 //! learned about.
 
 use crate::error::Error;
-use crate::protocol::{Frame, FrameAssembler, FrameType, OutBuf, Sequence};
+use crate::protocol::{Frame, FrameAssembler, FrameError, FrameType, OutBuf, Sequence};
 use crate::transport::ByteTransport;
 
 /// The receiver's current state. Exposed via [`Receiver::state`] for
@@ -25,6 +25,8 @@ pub enum RxState {
     Acknowledging,
     /// A FINISH frame has been accepted; the transfer is complete.
     Finished,
+    /// An ABORT frame has been accepted; the session was cancelled.
+    Aborted,
 }
 
 /// A stop-and-wait PSICOSE-1B receiver, symmetric to [`Sender`](crate::tx::Sender).
@@ -37,6 +39,8 @@ pub struct Receiver<T: ByteTransport> {
     pending: Option<PendingAction>,
     /// Set when FINISH(expected) was accepted. Survives assembler noise.
     finish_seq: Option<u8>,
+    /// Set when ABORT was accepted. Survives assembler noise.
+    abort_latched: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -45,7 +49,9 @@ enum PendingAction {
     Duplicate,
     Started,
     Finished,
+    Aborted,
     Rejected,
+    CrcRejected,
 }
 
 /// What happened as a result of one [`Receiver::poll`] call.
@@ -63,10 +69,22 @@ pub enum PollOutcome {
     Started,
     /// FINISH was accepted and ACKed. The transfer is closed.
     TransferFinished,
-    /// A frame was rejected (CRC/type failure, or unexpected `SEQ`). A
-    /// NACK was sent. This is a wire event, not an application failure:
+    /// A frame was rejected (type/semantics failure, or unexpected `SEQ`).
+    /// A NACK was sent. This is a wire event, not an application failure:
     /// keep polling.
     Rejected,
+    /// CRC failed. A NACK was sent. Counted separately from [`Self::Rejected`]
+    /// so session stats can tell CRC noise from a wrong `SEQ`.
+    CrcRejected,
+    /// ABORT was accepted and ACKed. The session is cancelled.
+    Aborted,
+}
+
+impl PollOutcome {
+    /// FINISH or ABORT completed the session. Keep polling otherwise.
+    pub const fn is_closed(self) -> bool {
+        matches!(self, Self::TransferFinished | Self::Aborted)
+    }
 }
 
 impl<T: ByteTransport> Receiver<T> {
@@ -80,6 +98,7 @@ impl<T: ByteTransport> Receiver<T> {
             out: OutBuf::empty(),
             pending: None,
             finish_seq: None,
+            abort_latched: false,
         }
     }
 
@@ -100,11 +119,17 @@ impl<T: ByteTransport> Receiver<T> {
     }
 
     fn settle_idle(&mut self) {
-        self.state = if self.finish_seq.is_some() {
+        self.state = if self.abort_latched {
+            RxState::Aborted
+        } else if self.finish_seq.is_some() {
             RxState::Finished
         } else {
             RxState::Idle
         };
+    }
+
+    fn is_closed(&self) -> bool {
+        self.abort_latched || self.finish_seq.is_some()
     }
 
     fn begin_reply(&mut self, frame: &Frame, action: PendingAction) {
@@ -148,9 +173,17 @@ impl<T: ByteTransport> Receiver<T> {
                 self.state = RxState::Finished;
                 Some(PollOutcome::TransferFinished)
             }
+            PendingAction::Aborted => {
+                self.state = RxState::Aborted;
+                Some(PollOutcome::Aborted)
+            }
             PendingAction::Rejected => {
                 self.settle_idle();
                 Some(PollOutcome::Rejected)
+            }
+            PendingAction::CrcRejected => {
+                self.settle_idle();
+                Some(PollOutcome::CrcRejected)
             }
         }
     }
@@ -164,8 +197,10 @@ impl<T: ByteTransport> Receiver<T> {
     /// loop {
     ///     match receiver.poll()? {
     ///         PollOutcome::Delivered(byte) => sink.write_byte(byte)?,
-    ///         PollOutcome::TransferFinished => break,
-    ///         PollOutcome::Started | PollOutcome::Pending | PollOutcome::DuplicateIgnored | PollOutcome::Rejected => {}
+    ///         PollOutcome::TransferFinished | PollOutcome::Aborted => break,
+    ///         PollOutcome::Started | PollOutcome::Pending
+    ///         | PollOutcome::DuplicateIgnored | PollOutcome::Rejected
+    ///         | PollOutcome::CrcRejected => {}
     ///     }
     /// }
     /// ```
@@ -190,16 +225,20 @@ impl<T: ByteTransport> Receiver<T> {
         self.state = RxState::Validating;
         let frame = match decode_result {
             Ok(frame) => frame,
-            Err(_) => {
-                if self.finish_seq.is_some() {
-                    self.state = RxState::Finished;
+            Err(err) => {
+                if self.is_closed() {
+                    self.settle_idle();
                     return Ok(PollOutcome::Pending);
                 }
-                self.begin_reply(&Frame::nack(self.expected_seq.current()), PendingAction::Rejected);
+                let action = match err {
+                    FrameError::CrcMismatch { .. } => PendingAction::CrcRejected,
+                    _ => PendingAction::Rejected,
+                };
+                self.begin_reply(&Frame::nack(self.expected_seq.current()), action);
                 return Ok(match self.pump_reply()? {
-                Some(outcome) => outcome,
-                None => PollOutcome::Pending,
-            });
+                    Some(outcome) => outcome,
+                    None => PollOutcome::Pending,
+                });
             }
         };
 
@@ -207,6 +246,7 @@ impl<T: ByteTransport> Receiver<T> {
             FrameType::Data => self.handle_data(frame)?,
             FrameType::Start => self.handle_start()?,
             FrameType::Finish => self.handle_finish(frame.seq())?,
+            FrameType::Abort => self.handle_abort()?,
             FrameType::Ack | FrameType::Nack => {
                 self.settle_idle();
                 return Ok(PollOutcome::Pending);
@@ -222,11 +262,27 @@ impl<T: ByteTransport> Receiver<T> {
     fn handle_start(&mut self) -> Result<(), Error<T::Error>> {
         self.expected_seq = Sequence::new();
         self.finish_seq = None;
+        self.abort_latched = false;
         self.begin_reply(&Frame::ack(0), PendingAction::Started);
         Ok(())
     }
 
+    fn handle_abort(&mut self) -> Result<(), Error<T::Error>> {
+        if self.finish_seq.is_some() {
+            self.state = RxState::Finished;
+            return Ok(());
+        }
+        self.abort_latched = true;
+        self.expected_seq = Sequence::new();
+        self.begin_reply(&Frame::ack(0), PendingAction::Aborted);
+        Ok(())
+    }
+
     fn handle_finish(&mut self, seq: u8) -> Result<(), Error<T::Error>> {
+        if self.abort_latched {
+            self.state = RxState::Aborted;
+            return Ok(());
+        }
         if let Some(closed) = self.finish_seq {
             if seq == closed {
                 self.begin_reply(&Frame::ack(seq), PendingAction::Finished);
@@ -247,6 +303,10 @@ impl<T: ByteTransport> Receiver<T> {
     }
 
     fn handle_data(&mut self, frame: Frame) -> Result<(), Error<T::Error>> {
+        if self.abort_latched {
+            self.state = RxState::Aborted;
+            return Ok(());
+        }
         if self.finish_seq.is_some() {
             self.state = RxState::Finished;
             return Ok(());
@@ -359,7 +419,7 @@ mod tests {
         let transport = MockTransport::with_incoming(&bytes);
         let mut rx = Receiver::new(transport);
 
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Rejected));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::CrcRejected));
         assert_eq!(rx.expected_seq(), 0);
         assert_eq!(rx.transport.written(), Frame::nack(0).to_bytes());
     }
@@ -542,5 +602,78 @@ mod tests {
             poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x00)
         ));
         assert_eq!(rx.expected_seq(), 1);
+    }
+
+    #[test]
+    fn abort_is_acked_and_cancels() {
+        let transport = MockTransport::with_incoming(&Frame::abort().to_bytes());
+        let mut rx = Receiver::new(transport);
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
+        assert_eq!(rx.state(), RxState::Aborted);
+        assert_eq!(rx.transport.written(), Frame::ack(0).to_bytes());
+    }
+
+    #[test]
+    fn data_after_abort_is_not_delivered() {
+        let incoming = crate::test_support::concat2(
+            Frame::abort().to_bytes(),
+            Frame::data(0, 0x99).to_bytes(),
+        );
+        let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
+        for _ in 0..8 {
+            assert_eq!(rx.poll(), Ok(PollOutcome::Pending));
+        }
+        assert_eq!(rx.state(), RxState::Aborted);
+        assert_eq!(rx.transport.written(), Frame::ack(0).to_bytes());
+    }
+
+    #[test]
+    fn abort_after_finish_is_ignored() {
+        let incoming = crate::test_support::concat2(
+            Frame::finish(0).to_bytes(),
+            Frame::abort().to_bytes(),
+        );
+        let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
+        for _ in 0..8 {
+            assert_eq!(rx.poll(), Ok(PollOutcome::Pending));
+        }
+        assert_eq!(rx.state(), RxState::Finished);
+        assert_eq!(rx.transport.written(), Frame::ack(0).to_bytes());
+    }
+
+    #[test]
+    fn start_after_abort_reopens_the_session() {
+        let incoming = crate::test_support::concat3(
+            Frame::abort().to_bytes(),
+            Frame::start().to_bytes(),
+            Frame::data(0, 0xAB).to_bytes(),
+        );
+        let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Started));
+        assert_eq!(rx.expected_seq(), 0);
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xAB)));
+        assert_eq!(rx.expected_seq(), 1);
+    }
+
+    #[test]
+    fn duplicate_abort_is_reacked() {
+        let incoming = crate::test_support::concat2(
+            Frame::abort().to_bytes(),
+            Frame::abort().to_bytes(),
+        );
+        let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
+        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
+        assert_eq!(
+            rx.transport.written(),
+            crate::test_support::concat2(Frame::ack(0).to_bytes(), Frame::ack(0).to_bytes())
+        );
+        assert_eq!(rx.state(), RxState::Aborted);
     }
 }

@@ -13,6 +13,7 @@ enum FlightKind {
     Data,
     Start,
     Finish,
+    Abort,
 }
 
 #[derive(Clone, Copy)]
@@ -127,7 +128,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
 
     fn has_session_flight(&self) -> bool {
         for slot in self.slots.iter().flatten() {
-            if matches!(slot.kind, FlightKind::Start | FlightKind::Finish) {
+            if matches!(slot.kind, FlightKind::Start | FlightKind::Finish | FlightKind::Abort) {
                 return true;
             }
         }
@@ -151,11 +152,11 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         Ok(())
     }
 
-    /// Opens a session. Allowed from Idle / Finished / Failed when the
-    /// window is empty.
+    /// Opens a session. Allowed from Idle / Finished / Aborted / Failed
+    /// when the window is empty.
     pub fn offer_start(&mut self) -> Result<(), Error<T::Error>> {
         match self.state {
-            TxState::Idle | TxState::Finished | TxState::Failed => {}
+            TxState::Idle | TxState::Finished | TxState::Aborted | TxState::Failed => {}
             _ if self.outstanding() == 0 && self.out.is_idle() => {}
             _ => return Err(Error::NotIdle),
         }
@@ -172,7 +173,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
     /// `[oldest_unacked, oldest_unacked+N)` has room, even if other
     /// frames are still in flight.
     pub fn offer(&mut self, data: u8) -> Result<(), Error<T::Error>> {
-        if matches!(self.state, TxState::Finished | TxState::Failed) {
+        if matches!(self.state, TxState::Finished | TxState::Aborted | TxState::Failed) {
             return Err(Error::NotIdle);
         }
         if self.has_session_flight() {
@@ -189,13 +190,40 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
 
     /// Queues FINISH at the next unused sequence. The window must be empty.
     pub fn offer_finish(&mut self) -> Result<(), Error<T::Error>> {
-        if matches!(self.state, TxState::Finished | TxState::Failed) {
+        if matches!(self.state, TxState::Finished | TxState::Aborted | TxState::Failed) {
             return Err(Error::NotIdle);
         }
         if self.outstanding() != 0 || self.has_session_flight() {
             return Err(Error::NotIdle);
         }
         self.insert(FlightKind::Finish, self.next_seq.current(), 0)
+    }
+
+    /// Cancels the session. Drops every slot, including a frame mid-write
+    /// or mid-retry, and sends `ABORT` (SEQ=0). Waits for ACK like FINISH.
+    pub fn offer_abort(&mut self) -> Result<(), Error<T::Error>> {
+        if matches!(self.state, TxState::Aborted) && self.outstanding() == 0 && self.out.is_idle() {
+            return Ok(());
+        }
+        if self.slots.iter().flatten().any(|s| matches!(s.kind, FlightKind::Abort)) {
+            return Ok(());
+        }
+        self.slots = [None; N];
+        self.out = OutBuf::empty();
+        self.writing = None;
+        self.assembler.reset();
+        self.next_seq = Sequence::new();
+        self.state = TxState::Sending;
+        self.insert(FlightKind::Abort, 0, 0)
+    }
+
+    /// Local cancel without writing ABORT. Used when the peer already aborted.
+    pub fn force_abort(&mut self) {
+        self.slots = [None; N];
+        self.out = OutBuf::empty();
+        self.writing = None;
+        self.assembler.reset();
+        self.state = TxState::Aborted;
     }
 
     fn pump_out(&mut self) -> Result<bool, Error<T::Error>> {
@@ -231,6 +259,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             FlightKind::Data => Frame::data(slot.seq, slot.payload),
             FlightKind::Start => Frame::start(),
             FlightKind::Finish => Frame::finish(slot.seq),
+            FlightKind::Abort => Frame::abort(),
         };
         self.out.load(&frame);
         self.writing = Some(i);
@@ -258,6 +287,9 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
     pub fn poll(&mut self) -> Result<TxPoll, Error<T::Error>> {
         if self.state == TxState::Failed {
             return Err(Error::RetriesExhausted);
+        }
+        if self.state == TxState::Aborted && self.outstanding() == 0 {
+            return Ok(TxPoll::Aborted);
         }
         if self.state == TxState::Finished && self.outstanding() == 0 {
             return Ok(TxPoll::TransferDone);
@@ -300,6 +332,10 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         match frame.frame_type() {
             FrameType::Ack => self.on_ack(frame.seq()),
             FrameType::Nack => self.on_nack(frame.seq()),
+            FrameType::Abort => {
+                self.force_abort();
+                Ok(TxPoll::Aborted)
+            }
             _ => Ok(TxPoll::Pending),
         }
     }
@@ -333,6 +369,10 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             FlightKind::Finish => {
                 self.state = TxState::Finished;
                 Ok(TxPoll::TransferDone)
+            }
+            FlightKind::Abort => {
+                self.state = TxState::Aborted;
+                Ok(TxPoll::Aborted)
             }
         }
     }
@@ -393,6 +433,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             match self.poll()? {
                 TxPoll::Pending | TxPoll::Acked => {}
                 TxPoll::SessionReady | TxPoll::TransferDone => return Ok(()),
+                TxPoll::Aborted => return Err(Error::Aborted),
             }
         }
     }
@@ -419,6 +460,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
                 }
                 TxPoll::Pending => {}
                 TxPoll::SessionReady | TxPoll::TransferDone => return Ok(()),
+                TxPoll::Aborted => return Err(Error::Aborted),
             }
         }
     }
@@ -438,6 +480,19 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             match self.poll()? {
                 TxPoll::Pending | TxPoll::Acked => {}
                 TxPoll::TransferDone | TxPoll::SessionReady => return Ok(()),
+                TxPoll::Aborted => return Err(Error::Aborted),
+            }
+        }
+    }
+
+    /// ABORT + wait for ACK.
+    pub fn send_abort(&mut self) -> Result<(), Error<T::Error>> {
+        self.offer_abort()?;
+        loop {
+            match self.poll()? {
+                TxPoll::Pending | TxPoll::Acked => {}
+                TxPoll::Aborted => return Ok(()),
+                TxPoll::SessionReady | TxPoll::TransferDone => return Ok(()),
             }
         }
     }
@@ -573,5 +628,21 @@ mod tests {
         drain_acks(&mut tx, 3);
         assert_eq!(tx.outstanding(), 1);
         assert_eq!(tx.offer(4), Err(Error::WindowFull));
+    }
+
+    #[test]
+    fn abort_clears_the_window_and_waits_for_ack() {
+        let mut tx = WindowedSender::<_, 4>::with_policy(
+            MockTransport::with_incoming(&Frame::ack(0).to_bytes()),
+            RetryPolicy::new(50, 3),
+        );
+        offer_ok(&mut tx, 0x10);
+        offer_ok(&mut tx, 0x11);
+        assert_eq!(tx.offer_abort(), Ok(()));
+        assert_eq!(tx.outstanding(), 1);
+        assert_eq!(tx.send_abort(), Ok(()));
+        assert_eq!(tx.state(), TxState::Aborted);
+        assert_eq!(tx.offer(0x12), Err(Error::NotIdle));
+        assert_eq!(tx.offer_start(), Ok(()));
     }
 }

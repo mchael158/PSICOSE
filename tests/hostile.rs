@@ -6,11 +6,12 @@ mod common;
 use core::cell::RefCell;
 
 use psicose::fault::{FaultPolicy, FaultyTransport};
-use psicose::rx::Receiver;
+use psicose::protocol::Frame;
+use psicose::rx::{Receiver, RxState};
 use psicose::timeout::RetryPolicy;
-use psicose::tx::Sender;
+use psicose::tx::{Sender, TxState};
 
-use common::{finish_coop, send_byte_coop, End, Wires};
+use common::{abort_coop, finish_coop, pump_rx, send_byte_coop, start_coop, End, Wires};
 
 fn policy() -> RetryPolicy {
     RetryPolicy::new(32, 8)
@@ -250,4 +251,145 @@ fn lost_finish_ack_causes_retransmit_without_extra_delivery() {
 
     assert_eq!(n, 1, "FINISH retry must not deliver payload again");
     assert_eq!(received[0], 0x02);
+}
+
+#[test]
+fn corrupt_ack_is_ignored_then_retransmit_succeeds() {
+    let wires = RefCell::new(Wires::new());
+    let mut sender = Sender::with_policy(
+        End {
+            wires: &wires,
+            is_a: true,
+        },
+        policy(),
+    );
+    let rx_end = FaultyTransport::on_write(
+        End {
+            wires: &wires,
+            is_a: false,
+        },
+        FaultPolicy::corrupt_first(1),
+    );
+    let mut receiver = Receiver::new(rx_end);
+
+    let mut received = [0u8; 1];
+    let mut n = 0usize;
+    send_byte_coop(&mut sender, &mut receiver, 0x42, &mut received, &mut n);
+
+    assert_eq!(n, 1);
+    assert_eq!(received[0], 0x42);
+}
+
+#[test]
+fn abort_during_retry_discards_data_and_reopens() {
+    let wires = RefCell::new(Wires::new());
+    let tx_end = FaultyTransport::on_write(
+        End {
+            wires: &wires,
+            is_a: true,
+        },
+        FaultPolicy::corrupt_first(1),
+    );
+    let mut sender = Sender::with_policy(tx_end, policy());
+    let mut receiver = Receiver::new(End {
+        wires: &wires,
+        is_a: false,
+    });
+
+    let mut received = [0u8; 2];
+    let mut n = 0usize;
+    assert_eq!(sender.offer(0x33), Ok(()));
+    let mut saw_retry = false;
+    let mut i = 0usize;
+    while i < 10_000 {
+        i += 1;
+        let _ = sender.poll();
+        let _ = pump_rx(&mut receiver, &mut received, &mut n);
+        if sender.state() == TxState::Retrying {
+            saw_retry = true;
+            break;
+        }
+    }
+    assert_eq!(saw_retry, true);
+    abort_coop(&mut sender, &mut receiver, &mut received, &mut n);
+    assert_eq!(sender.state(), TxState::Aborted);
+
+    start_coop(&mut sender, &mut receiver, &mut received, &mut n);
+    send_byte_coop(&mut sender, &mut receiver, 0x44, &mut received, &mut n);
+    assert_eq!(received[n - 1], 0x44);
+}
+
+#[test]
+fn abort_after_finish_is_ignored() {
+    let wires = RefCell::new(Wires::new());
+    let mut sender = Sender::with_policy(
+        End {
+            wires: &wires,
+            is_a: true,
+        },
+        policy(),
+    );
+    let mut receiver = Receiver::new(End {
+        wires: &wires,
+        is_a: false,
+    });
+
+    let mut received = [0u8; 1];
+    let mut n = 0usize;
+    send_byte_coop(&mut sender, &mut receiver, 0x02, &mut received, &mut n);
+    finish_coop(&mut sender, &mut receiver, &mut received, &mut n);
+    assert_eq!(receiver.state(), RxState::Finished);
+
+    {
+        let mut w = wires.borrow_mut();
+        for b in Frame::abort().to_bytes() {
+            assert_eq!(w.a_to_b.push(b), true);
+        }
+    }
+    let mut i = 0usize;
+    while i < 16 {
+        i += 1;
+        let _ = pump_rx(&mut receiver, &mut received, &mut n);
+    }
+    assert_eq!(receiver.state(), RxState::Finished);
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn wraparound_after_abort_starts_at_zero() {
+    const N: usize = 256;
+    let wires = RefCell::new(Wires::new());
+    let mut sender = Sender::with_policy(
+        End {
+            wires: &wires,
+            is_a: true,
+        },
+        policy(),
+    );
+    let mut receiver = Receiver::new(End {
+        wires: &wires,
+        is_a: false,
+    });
+
+    let mut received = [0u8; N + 1];
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i < N {
+        send_byte_coop(
+            &mut sender,
+            &mut receiver,
+            (i % 256) as u8,
+            &mut received,
+            &mut n,
+        );
+        i += 1;
+    }
+    assert_eq!(sender.next_seq(), 0);
+    abort_coop(&mut sender, &mut receiver, &mut received, &mut n);
+    start_coop(&mut sender, &mut receiver, &mut received, &mut n);
+    assert_eq!(sender.next_seq(), 0);
+    assert_eq!(receiver.expected_seq(), 0);
+    send_byte_coop(&mut sender, &mut receiver, 0x7E, &mut received, &mut n);
+    assert_eq!(received[n - 1], 0x7E);
+    assert_eq!(sender.next_seq(), 1);
 }

@@ -11,7 +11,7 @@
 //! same 4-byte `OutBuf` / assembler. A 4 GB file still never lives here —
 //! only up to `N` payload bytes plus a few control bytes.
 //!
-//! `START` / `FINISH` stay stop-and-wait. Only DATA uses the window.
+//! `START` / `FINISH` / `ABORT` stay stop-and-wait. Only DATA uses the window.
 
 mod rx;
 mod tx;

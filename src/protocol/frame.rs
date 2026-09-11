@@ -11,8 +11,8 @@
 //!
 //! A [`Frame`] is **semantically** valid by construction: the only public
 //! builders are [`Frame::data`], [`Frame::ack`], [`Frame::nack`],
-//! [`Frame::start`], and [`Frame::finish`]. Control frames always carry
-//! `DATA = 0`. [`Frame::from_bytes`] also rejects a CRC-valid frame that
+//! [`Frame::start`], [`Frame::finish`], and [`Frame::abort`]. Control
+//! frames always carry `DATA = 0`. [`Frame::from_bytes`] also rejects a CRC-valid frame that
 //! breaks those rules (e.g. an ACK with `DATA = 0xFF` on the wire).
 //! CRC-valid ≠ semantically valid.
 
@@ -41,6 +41,8 @@ pub enum FrameType {
     Start = 0x04,
     /// Closes a session; must be ACKed before either side is done.
     Finish = 0x05,
+    /// Cancels a session immediately. `SEQ = 0`, `DATA = 0`. Must be ACKed.
+    Abort = 0x06,
 }
 
 impl FrameType {
@@ -51,6 +53,7 @@ impl FrameType {
             0x03 => Some(FrameType::Nack),
             0x04 => Some(FrameType::Start),
             0x05 => Some(FrameType::Finish),
+            0x06 => Some(FrameType::Abort),
             _ => None,
         }
     }
@@ -74,7 +77,7 @@ pub enum FrameError {
         got: u8,
     },
     /// CRC and TYPE were fine, but the frame broke the control-frame
-    /// contract (`DATA` must be 0; `START.seq` must be 0).
+    /// contract (`DATA` must be 0; `START`/`ABORT` seq must be 0).
     InvalidSemantics,
 }
 
@@ -128,6 +131,11 @@ impl Frame {
         Frame::raw(FrameType::Finish, seq, 0)
     }
 
+    /// Session abort. `SEQ = 0`, `DATA = 0`.
+    pub const fn abort() -> Self {
+        Frame::raw(FrameType::Abort, 0, 0)
+    }
+
     /// The frame's type.
     pub const fn frame_type(&self) -> FrameType {
         self.frame_type
@@ -154,7 +162,7 @@ impl Frame {
         if frame_type.is_control() && data != 0 {
             return false;
         }
-        if matches!(frame_type, FrameType::Start) && seq != 0 {
+        if matches!(frame_type, FrameType::Start | FrameType::Abort) && seq != 0 {
             return false;
         }
         true
@@ -199,6 +207,8 @@ mod tests {
         assert_eq!(Frame::start().payload(), 0);
         assert_eq!(Frame::start().seq(), 0);
         assert_eq!(Frame::finish(255).payload(), 0);
+        assert_eq!(Frame::abort().payload(), 0);
+        assert_eq!(Frame::abort().seq(), 0);
     }
 
     #[test]
@@ -208,6 +218,7 @@ mod tests {
             Frame::nack(7),
             Frame::start(),
             Frame::finish(255),
+            Frame::abort(),
         ] {
             assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
         }
@@ -248,6 +259,17 @@ mod tests {
         assert_eq!(
             Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics
         ));
+    }
+
+    #[test]
+    fn rejects_abort_with_nonzero_seq() {
+        let header = [FrameType::Abort as u8, 1, 0];
+        let crc = crc8(&header);
+        let bytes = [header[0], header[1], header[2], crc];
+        assert_eq!(
+            Frame::from_bytes(bytes),
+            Err(FrameError::InvalidSemantics)
+        );
     }
 
     #[test]

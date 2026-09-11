@@ -25,6 +25,10 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Conservative default: 1000 empty polls, up to 5 retransmissions.
+    /// Tune per link — a slow radio and a fast SPI disagree on time.
+    pub const DEFAULT: Self = Self::new(1000, 5);
+
     /// Builds a policy with explicit values.
     pub const fn new(timeout_ticks: u16, max_retries: u8) -> Self {
         RetryPolicy {
@@ -35,14 +39,8 @@ impl RetryPolicy {
 }
 
 impl Default for RetryPolicy {
-    /// A conservative default: 1000 empty polls before timing out, up to
-    /// 5 retransmissions. Tune this per link — a slow radio link and a
-    /// fast SPI bus have very different sensible defaults.
     fn default() -> Self {
-        RetryPolicy {
-            timeout_ticks: 1000,
-            max_retries: 5,
-        }
+        Self::DEFAULT
     }
 }
 

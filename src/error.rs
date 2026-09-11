@@ -34,6 +34,8 @@ pub enum Error<E> {
     /// The send window already holds `N` unacknowledged frames.
     /// Poll until an ACK frees a slot, then offer again.
     WindowFull,
+    /// The session was cancelled by [`FrameType::Abort`](crate::protocol::FrameType::Abort).
+    Aborted,
 }
 
 impl<E> From<FrameError> for Error<E> {
@@ -57,6 +59,7 @@ impl<E: core::fmt::Debug> core::fmt::Display for Error<E> {
             Error::RetriesExhausted => write!(f, "retransmission budget exhausted"),
             Error::NotIdle => write!(f, "sender is not idle"),
             Error::WindowFull => write!(f, "send window is full"),
+            Error::Aborted => write!(f, "session aborted"),
         }
     }
 }

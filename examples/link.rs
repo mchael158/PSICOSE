@@ -7,9 +7,10 @@
 use core::cell::RefCell;
 
 use psicose::error::Error;
-use psicose::rx::{PollOutcome, Receiver};
+use psicose::pump::{Pump, PumpEvent};
+use psicose::rx::PollOutcome;
 use psicose::transport::{ByteSink, ByteSource, ByteTransport};
-use psicose::tx::{Sender, TxPoll, TxState};
+use psicose::tx::{TxPoll, TxState};
 use psicose::window::{WindowedReceiver, WindowedSender};
 
 const RING: usize = 256;
@@ -116,14 +117,16 @@ where
     K: ByteSink,
 {
     let wires = RefCell::new(Wires::new());
-    let mut tx = Sender::new(End {
-        wires: &wires,
-        is_a: true,
-    });
-    let mut rx = Receiver::new(End {
-        wires: &wires,
-        is_a: false,
-    });
+    let mut pump = Pump::on(
+        End {
+            wires: &wires,
+            is_a: true,
+        },
+        End {
+            wires: &wires,
+            is_a: false,
+        },
+    );
 
     let mut hold: Option<u8> = None;
     let mut exhausted = false;
@@ -138,13 +141,13 @@ where
             }
         }
 
-        if tx.state() == TxState::Idle {
+        if pump.sender().state() == TxState::Idle {
             if let Some(b) = hold.take() {
-                if tx.offer(b).is_err() {
+                if pump.sender_mut().offer(b).is_err() {
                     hold = Some(b);
                 }
             } else if exhausted {
-                match tx.offer_finish() {
+                match pump.sender_mut().offer_finish() {
                     Ok(()) => {}
                     Err(Error::NotIdle) => {}
                     Err(_) => return Err(CopyError::Protocol),
@@ -152,20 +155,15 @@ where
             }
         }
 
-        match tx.poll() {
-            Ok(TxPoll::TransferDone) => {}
-            Ok(_) => {}
-            Err(_) => return Err(CopyError::Protocol),
-        }
-
-        match rx.poll() {
-            Ok(PollOutcome::Delivered(byte)) => {
+        match pump.poll() {
+            Ok(PumpEvent::Received(byte)) => {
                 if sink.write_byte(byte).is_err() {
                     return Err(CopyError::Sink);
                 }
                 n = n.saturating_add(1);
             }
-            Ok(PollOutcome::TransferFinished) => return Ok(n),
+            Ok(PumpEvent::Completed) => return Ok(n),
+            Ok(PumpEvent::Aborted) => return Err(CopyError::Protocol),
             Ok(_) => {}
             Err(_) => return Err(CopyError::Protocol),
         }
@@ -239,6 +237,8 @@ where
 
     Err(CopyError::Stalled)
 }
+
+fn main() {}
 
 /// Pair of ends on the same wire, for examples that wrap the transport.
 pub fn pair(wires: &RefCell<Wires>) -> (End<'_>, End<'_>) {

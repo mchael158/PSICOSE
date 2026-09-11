@@ -82,6 +82,12 @@ impl ByteSource for SliceSource<'_> {
     }
 }
 
+impl<'a> From<&'a [u8]> for SliceSource<'a> {
+    fn from(bytes: &'a [u8]) -> Self {
+        SliceSource::new(bytes)
+    }
+}
+
 /// Borrowed byte sink. The caller owns the buffer; PSICOSE does not.
 pub struct SliceSink<'a> {
     buf: &'a mut [u8],
@@ -118,14 +124,20 @@ impl ByteSink for SliceSink<'_> {
     }
 }
 
+impl<'a> From<&'a mut [u8]> for SliceSink<'a> {
+    fn from(buf: &'a mut [u8]) -> Self {
+        SliceSink::new(buf)
+    }
+}
+
 /// Drain `src` through a stop-and-wait sender, then FINISH.
 ///
 /// The source can be a file, flash, camera buffer, or [`SliceSource`].
 /// Returns how many payload bytes were accepted by the peer.
 ///
-/// The transport must be able to yield ACKs while this function polls.
-/// On a single-thread in-memory pair, interleave `offer` / `poll` with
-/// the receiver yourself.
+/// This path expects ACKs on the sender's own transport (scripted
+/// replies). On a live pair, use [`crate::Pump::send_all`] so RX is
+/// polled in the same cooperative step.
 pub fn send_all<T, S>(
     tx: &mut Sender<T>,
     src: &mut S,
@@ -208,9 +220,11 @@ where
                 n = n.saturating_add(1);
             }
             PollOutcome::TransferFinished => return Ok(n),
+            PollOutcome::Aborted => return Err(StreamError::Protocol(Error::Aborted)),
             PollOutcome::Pending
             | PollOutcome::DuplicateIgnored
             | PollOutcome::Rejected
+            | PollOutcome::CrcRejected
             | PollOutcome::Started => {}
         }
     }
@@ -233,9 +247,11 @@ where
                 n = n.saturating_add(1);
             }
             PollOutcome::TransferFinished => return Ok(n),
+            PollOutcome::Aborted => return Err(StreamError::Protocol(Error::Aborted)),
             PollOutcome::Pending
             | PollOutcome::DuplicateIgnored
             | PollOutcome::Rejected
+            | PollOutcome::CrcRejected
             | PollOutcome::Started => {}
         }
     }

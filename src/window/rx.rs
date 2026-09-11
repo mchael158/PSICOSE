@@ -1,7 +1,7 @@
 //! Heapless selective-repeat receiver: reorder buffer `[Option<u8>; N]`.
 
 use crate::error::Error;
-use crate::protocol::{Frame, FrameAssembler, FrameType, OutBuf, Sequence};
+use crate::protocol::{Frame, FrameAssembler, FrameError, FrameType, OutBuf, Sequence};
 use crate::rx::{PollOutcome, RxState};
 use crate::transport::ByteTransport;
 
@@ -14,7 +14,9 @@ enum PendingAction {
     Quiet,
     Started,
     Finished,
+    Aborted,
     Rejected,
+    CrcRejected,
 }
 
 /// Selective-repeat receiver with a compile-time window of `N` frames.
@@ -33,6 +35,7 @@ pub struct WindowedReceiver<T: ByteTransport, const N: usize> {
     out: OutBuf,
     pending: Option<PendingAction>,
     finish_seq: Option<u8>,
+    abort_latched: bool,
 }
 
 impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
@@ -51,6 +54,7 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
             out: OutBuf::empty(),
             pending: None,
             finish_seq: None,
+            abort_latched: false,
         }
     }
 
@@ -70,11 +74,17 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
     }
 
     fn settle_idle(&mut self) {
-        self.state = if self.finish_seq.is_some() {
+        self.state = if self.abort_latched {
+            RxState::Aborted
+        } else if self.finish_seq.is_some() {
             RxState::Finished
         } else {
             RxState::Idle
         };
+    }
+
+    fn is_closed(&self) -> bool {
+        self.abort_latched || self.finish_seq.is_some()
     }
 
     fn clear_window(&mut self) {
@@ -176,6 +186,7 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
             }
             PendingAction::Started => {
                 self.finish_seq = None;
+                self.abort_latched = false;
                 self.state = RxState::Idle;
                 Some(PollOutcome::Started)
             }
@@ -183,9 +194,17 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
                 self.state = RxState::Finished;
                 Some(PollOutcome::TransferFinished)
             }
+            PendingAction::Aborted => {
+                self.state = RxState::Aborted;
+                Some(PollOutcome::Aborted)
+            }
             PendingAction::Rejected => {
                 self.settle_idle();
                 Some(PollOutcome::Rejected)
+            }
+            PendingAction::CrcRejected => {
+                self.settle_idle();
+                Some(PollOutcome::CrcRejected)
             }
         }
     }
@@ -215,19 +234,20 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
         self.state = RxState::Validating;
         let frame = match decode_result {
             Ok(frame) => frame,
-            Err(_) => {
-                if self.finish_seq.is_some() {
-                    self.state = RxState::Finished;
+            Err(err) => {
+                if self.is_closed() {
+                    self.settle_idle();
                     return Ok(PollOutcome::Pending);
                 }
-                self.begin_reply(
-                    &Frame::nack(self.expected_seq.current()),
-                    PendingAction::Rejected,
-                );
+                let action = match err {
+                    FrameError::CrcMismatch { .. } => PendingAction::CrcRejected,
+                    _ => PendingAction::Rejected,
+                };
+                self.begin_reply(&Frame::nack(self.expected_seq.current()), action);
                 return Ok(match self.pump_reply()? {
-                Some(outcome) => outcome,
-                None => PollOutcome::Pending,
-            });
+                    Some(outcome) => outcome,
+                    None => PollOutcome::Pending,
+                });
             }
         };
 
@@ -235,6 +255,7 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
             FrameType::Data => self.handle_data(frame)?,
             FrameType::Start => self.handle_start()?,
             FrameType::Finish => self.handle_finish(frame.seq())?,
+            FrameType::Abort => self.handle_abort()?,
             FrameType::Ack | FrameType::Nack => {
                 self.settle_idle();
                 return Ok(PollOutcome::Pending);
@@ -250,12 +271,29 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
     fn handle_start(&mut self) -> Result<(), Error<T::Error>> {
         self.expected_seq = Sequence::new();
         self.finish_seq = None;
+        self.abort_latched = false;
         self.clear_window();
         self.begin_reply(&Frame::ack(0), PendingAction::Started);
         Ok(())
     }
 
+    fn handle_abort(&mut self) -> Result<(), Error<T::Error>> {
+        if self.finish_seq.is_some() {
+            self.state = RxState::Finished;
+            return Ok(());
+        }
+        self.abort_latched = true;
+        self.expected_seq = Sequence::new();
+        self.clear_window();
+        self.begin_reply(&Frame::ack(0), PendingAction::Aborted);
+        Ok(())
+    }
+
     fn handle_finish(&mut self, seq: u8) -> Result<(), Error<T::Error>> {
+        if self.abort_latched {
+            self.state = RxState::Aborted;
+            return Ok(());
+        }
         if let Some(closed) = self.finish_seq {
             if seq == closed {
                 self.begin_reply(&Frame::ack(seq), PendingAction::Finished);
@@ -277,6 +315,10 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
     }
 
     fn handle_data(&mut self, frame: Frame) -> Result<(), Error<T::Error>> {
+        if self.abort_latched {
+            self.state = RxState::Aborted;
+            return Ok(());
+        }
         if self.finish_seq.is_some() {
             self.state = RxState::Finished;
             return Ok(());

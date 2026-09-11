@@ -49,6 +49,8 @@ pub enum TxState {
     Retrying,
     /// FINISH was ACKed.
     Finished,
+    /// ABORT was ACKed, or a peer ABORT was observed.
+    Aborted,
     /// Retry budget exhausted.
     Failed,
 }
@@ -64,6 +66,8 @@ pub enum TxPoll {
     SessionReady,
     /// FINISH was ACKed; transfer is closed.
     TransferDone,
+    /// ABORT was ACKed, or a peer ABORT cancelled the flight.
+    Aborted,
 }
 
 #[derive(Clone, Copy)]
@@ -71,6 +75,7 @@ enum FlightKind {
     Data(u8),
     Start,
     Finish,
+    Abort,
 }
 
 struct InFlight {
@@ -90,6 +95,15 @@ pub struct Sender<T: ByteTransport> {
     assembler: FrameAssembler,
     inflight: Option<InFlight>,
     out: OutBuf,
+    mark: IoMark,
+}
+
+/// One-shot hint for [`crate::pump::Pump`] tallies. Cleared each poll.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct IoMark {
+    pub frame_on_wire: bool,
+    pub nack: bool,
+    pub retransmit: bool,
 }
 
 impl<T: ByteTransport> Sender<T> {
@@ -108,6 +122,7 @@ impl<T: ByteTransport> Sender<T> {
             assembler: FrameAssembler::new(),
             inflight: None,
             out: OutBuf::empty(),
+            mark: IoMark::default(),
         }
     }
 
@@ -136,11 +151,24 @@ impl<T: ByteTransport> Sender<T> {
         self.state = TxState::Sending;
     }
 
-    /// Opens a session. Allowed from Idle, Finished, or Failed (recovery).
+    pub(crate) fn holds_session_control(&self) -> bool {
+        matches!(
+            self.inflight.as_ref().map(|f| f.kind),
+            Some(FlightKind::Abort | FlightKind::Start)
+        )
+    }
+
+    pub(crate) fn take_mark(&mut self) -> IoMark {
+        let mark = self.mark;
+        self.mark = IoMark::default();
+        mark
+    }
+
+    /// Opens a session. Allowed from Idle, Finished, Aborted, or Failed.
     /// The receiver resets `expected_seq` to 0 and ACKs.
     pub fn offer_start(&mut self) -> Result<(), Error<T::Error>> {
         match self.state {
-            TxState::Idle | TxState::Finished | TxState::Failed => {}
+            TxState::Idle | TxState::Finished | TxState::Aborted | TxState::Failed => {}
             _ => return Err(Error::NotIdle),
         }
         if !self.out.is_idle() {
@@ -170,6 +198,32 @@ impl<T: ByteTransport> Sender<T> {
         Ok(())
     }
 
+    /// Cancels the session. Drops any in-flight DATA/START/FINISH, including
+    /// a frame mid-write or mid-retry, and sends `ABORT` (SEQ=0). Waits for
+    /// ACK like FINISH. Allowed except while an ABORT is already on the wire.
+    pub fn offer_abort(&mut self) -> Result<(), Error<T::Error>> {
+        if matches!(self.state, TxState::Aborted) && self.inflight.is_none() {
+            return Ok(());
+        }
+        if matches!(self.inflight.as_ref().map(|f| f.kind), Some(FlightKind::Abort)) {
+            return Ok(());
+        }
+        self.inflight = None;
+        self.out = OutBuf::empty();
+        self.assembler.reset();
+        self.seq = Sequence::new();
+        self.begin(FlightKind::Abort, 0);
+        Ok(())
+    }
+
+    /// Local cancel without writing ABORT. Used when the peer already aborted.
+    pub fn force_abort(&mut self) {
+        self.inflight = None;
+        self.out = OutBuf::empty();
+        self.assembler.reset();
+        self.state = TxState::Aborted;
+    }
+
     fn pump_out(&mut self) -> Result<bool, Error<T::Error>> {
         let Some(byte) = self.out.peek() else {
             return Ok(true);
@@ -187,6 +241,7 @@ impl<T: ByteTransport> Sender<T> {
             FlightKind::Data(byte) => Frame::data(flight.seq, byte),
             FlightKind::Start => Frame::start(),
             FlightKind::Finish => Frame::finish(flight.seq),
+            FlightKind::Abort => Frame::abort(),
         };
         self.out.load(&frame);
         self.state = TxState::Sending;
@@ -194,8 +249,12 @@ impl<T: ByteTransport> Sender<T> {
 
     /// One non-blocking step: write at most one byte, or read at most one.
     pub fn poll(&mut self) -> Result<TxPoll, Error<T::Error>> {
+        self.mark = IoMark::default();
         if self.state == TxState::Failed {
             return Err(Error::RetriesExhausted);
+        }
+        if self.state == TxState::Aborted && self.inflight.is_none() {
+            return Ok(TxPoll::Aborted);
         }
         if self.state == TxState::Finished && self.inflight.is_none() {
             return Ok(TxPoll::TransferDone);
@@ -213,6 +272,7 @@ impl<T: ByteTransport> Sender<T> {
             }
             self.assembler.reset();
             self.state = TxState::WaitingAck;
+            self.mark.frame_on_wire = true;
             return Ok(TxPoll::Pending);
         }
 
@@ -232,6 +292,7 @@ impl<T: ByteTransport> Sender<T> {
             }
             self.assembler.reset();
             self.state = TxState::WaitingAck;
+            self.mark.frame_on_wire = true;
             return Ok(TxPoll::Pending);
         }
 
@@ -267,8 +328,15 @@ impl<T: ByteTransport> Sender<T> {
             None => 0,
         };
         match (frame.frame_type(), frame.seq()) {
+            (FrameType::Abort, _) => {
+                self.force_abort();
+                Ok(TxPoll::Aborted)
+            }
             (FrameType::Ack, s) if s == seq => self.on_ack(),
-            (FrameType::Nack, s) if s == seq => self.on_attempt_failed(),
+            (FrameType::Nack, s) if s == seq => {
+                self.mark.nack = true;
+                self.on_attempt_failed()
+            }
             (FrameType::Ack | FrameType::Nack, _) => {
                 if let Some(flight) = self.inflight.as_mut() {
                     flight.empty_ticks = 0;
@@ -299,6 +367,10 @@ impl<T: ByteTransport> Sender<T> {
                 self.state = TxState::Finished;
                 Ok(TxPoll::TransferDone)
             }
+            FlightKind::Abort => {
+                self.state = TxState::Aborted;
+                Ok(TxPoll::Aborted)
+            }
         }
     }
 
@@ -315,6 +387,7 @@ impl<T: ByteTransport> Sender<T> {
         flight.waiting = false;
         flight.empty_ticks = 0;
         self.state = TxState::Retrying;
+        self.mark.retransmit = true;
         Ok(TxPoll::Pending)
     }
 
@@ -326,6 +399,7 @@ impl<T: ByteTransport> Sender<T> {
                 TxPoll::Pending => {}
                 TxPoll::SessionReady => return Ok(()),
                 TxPoll::Acked | TxPoll::TransferDone => return Ok(()),
+                TxPoll::Aborted => return Err(Error::Aborted),
             }
         }
     }
@@ -338,6 +412,7 @@ impl<T: ByteTransport> Sender<T> {
                 TxPoll::Pending => {}
                 TxPoll::Acked => return Ok(()),
                 TxPoll::SessionReady | TxPoll::TransferDone => return Ok(()),
+                TxPoll::Aborted => return Err(Error::Aborted),
             }
         }
     }
@@ -350,6 +425,19 @@ impl<T: ByteTransport> Sender<T> {
                 TxPoll::Pending => {}
                 TxPoll::TransferDone => return Ok(()),
                 TxPoll::Acked | TxPoll::SessionReady => return Ok(()),
+                TxPoll::Aborted => return Err(Error::Aborted),
+            }
+        }
+    }
+
+    /// ABORT + wait for ACK.
+    pub fn send_abort(&mut self) -> Result<(), Error<T::Error>> {
+        self.offer_abort()?;
+        loop {
+            match self.poll()? {
+                TxPoll::Pending => {}
+                TxPoll::Aborted => return Ok(()),
+                TxPoll::Acked | TxPoll::SessionReady | TxPoll::TransferDone => return Ok(()),
             }
         }
     }
@@ -484,5 +572,57 @@ mod tests {
         let mut sender = Sender::with_policy(transport, RetryPolicy::new(50, 3));
         assert_eq!(sender.send_byte(0x01), Ok(()));
         assert_eq!(sender.transport.written(), Frame::data(0, 0x01).to_bytes());
+    }
+
+    #[test]
+    fn abort_waits_for_ack() {
+        let transport = MockTransport::with_incoming(&Frame::ack(0).to_bytes());
+        let mut sender = Sender::new(transport);
+        assert_eq!(sender.send_abort(), Ok(()));
+        assert_eq!(sender.state(), TxState::Aborted);
+        assert_eq!(sender.transport.written(), Frame::abort().to_bytes());
+    }
+
+    #[test]
+    fn abort_during_retry_drops_data_and_sends_abort() {
+        let incoming = concat2(Frame::nack(0).to_bytes(), Frame::ack(0).to_bytes());
+        let transport = MockTransport::with_incoming(&incoming);
+        let mut sender = Sender::with_policy(transport, RetryPolicy::new(50, 3));
+        assert_eq!(sender.offer(0x11), Ok(()));
+        loop {
+            match sender.poll() {
+                Ok(TxPoll::Pending) if sender.state() == TxState::Retrying => break,
+                Ok(TxPoll::Pending) => {}
+                other => {
+                    assert_eq!(other, Ok(TxPoll::Pending));
+                    break;
+                }
+            }
+        }
+        assert_eq!(sender.offer_abort(), Ok(()));
+        assert_eq!(sender.send_abort(), Ok(()));
+        assert_eq!(sender.state(), TxState::Aborted);
+        let written = sender.transport.written();
+        assert_eq!(&written[written.len() - 4..], &Frame::abort().to_bytes());
+    }
+
+    #[test]
+    fn peer_abort_cancels_an_in_flight_data() {
+        let transport = MockTransport::with_incoming(&Frame::abort().to_bytes());
+        let mut sender = Sender::new(transport);
+        assert_eq!(sender.send_byte(0x01), Err(Error::Aborted));
+        assert_eq!(sender.state(), TxState::Aborted);
+    }
+
+    #[test]
+    fn start_after_abort_reopens() {
+        let incoming = concat2(Frame::ack(0).to_bytes(), Frame::ack(0).to_bytes());
+        let transport = MockTransport::with_incoming(&incoming);
+        let mut sender = Sender::new(transport);
+        assert_eq!(sender.send_abort(), Ok(()));
+        assert_eq!(sender.offer(0x01), Err(Error::NotIdle));
+        assert_eq!(sender.send_start(), Ok(()));
+        assert_eq!(sender.state(), TxState::Idle);
+        assert_eq!(sender.next_seq(), 0);
     }
 }

@@ -61,9 +61,10 @@ impl<T: ByteTransport> Actor for RxActor<T> {
             PollOutcome::Pending
             | PollOutcome::DuplicateIgnored
             | PollOutcome::Rejected
+            | PollOutcome::CrcRejected
             | PollOutcome::Started => Tick::Pending,
             PollOutcome::Delivered(byte) => Tick::Ready(byte),
-            PollOutcome::TransferFinished => Tick::Done,
+            PollOutcome::TransferFinished | PollOutcome::Aborted => Tick::Done,
         })
     }
 }

@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+## 0.2.3 — 2026-09-11
+
+- `FrameType::Abort = 0x06` on the same 4-byte envelope (`SEQ = 0`).
+- Cooperative `Pump` (`rx.poll` then `tx.poll`, no inner loop) and
+  `SessionStats` (Copy, stack-only). `Pump::send_all` is the live-pair
+  convenience; scripted `stream::send_all` is unchanged.
+- `PollOutcome::CrcRejected` / `Aborted`; TX/RX/window abort semantics.
+  `PollOutcome::is_closed()` covers FINISH and ABORT.
+- P2P layer in the same crate (`p2p` module), still `no_std`/heapless:
+  `PeerId` (8 bytes), 12-byte hello (`PeerId` + version + window +
+  features), `Capabilities` bits (`WINDOW`/`STREAM`/`FORUM`/
+  `COMPRESSION`/`ENCRYPTION`/`FRAGMENTATION`; CRC is not negotiated),
+  deterministic handshake (min version, min window, feature
+  intersection), `PeerSession` states (`Disconnected`/`Connecting`/
+  `Established`/`Closing`/`Aborted`, ≤ 128 bytes), `StreamId` /
+  `MessageId` / 7-byte `MessageHeader` / `Fragmenter`. Everything
+  travels as payload bytes; the 4-byte frame is unchanged.
+- End-to-end P2P: `PeerTable<N>` (`1 ≤ N ≤ 8`) + `PeerLink` over a real
+  `Pump` (START + 12-byte hello both ways). `Wire` demuxes one incoming
+  stream (ACK/NACK → TX, the rest → RX).
+- Public names: `use psicose::prelude::*`. `PeerTable::new(id)`,
+  `Wire::new().pumps()`, `Pump::on(tx, rx)`, `PeerLink::connect` /
+  `accept`, `link.offer(byte)`, `PeerId::from([u8; 8])`,
+  `SessionConfig::offer(window, features)`, `Capabilities::STREAM | …`.
+  Spec: `PROTOCOL.md` §11.
+
 ## 0.2.2 — 2026-09-10
 
 - Library, tests, and docs no longer call `unwrap` / `expect` / `panic`.

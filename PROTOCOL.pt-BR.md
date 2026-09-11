@@ -1,4 +1,4 @@
-# PSICOSE-1B — protocolo formal (0.2.2)
+# PSICOSE-1B — protocolo formal (0.2.3)
 
 [English](PROTOCOL.md) · [Português (Brasil)](PROTOCOL.pt-BR.md)
 
@@ -6,8 +6,35 @@ Máquina de transporte `no_std`, sem heap. Este arquivo é a especificação.
 O código em `src/` é a implementação. Se os dois divergirem, o teste
 adversarial em `tests/hostile.rs` decide.
 
-**Estado:** transporte de byte confiável experimental. Ainda não é o
+**Estado:** transporte de byte confiável experimental mais uma camada
+P2P que viaja no mesmo frame de 4 bytes, como payload. Ainda não é o
 protocolo final.
+
+```
+                    APLICAÇÃO
+                         │
+              ┌──────────▼──────────┐
+              │     p2p (aqui)      │
+              │ PeerId / Session    │
+              │ Stream / Message    │
+              └──────────┬──────────┘
+                         │ bytes de payload
+              ┌──────────▼──────────┐
+              │      transporte     │
+              │  ACK / NACK / CRC   │
+              │  START / FINISH /   │
+              │  ABORT / Pump       │
+              └──────────┬──────────┘
+                         │
+                   ByteTransport
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+        UART           TCP/UDP        Rádio
+```
+
+O transporte não sabe o que é peer, stream ou post de fórum. A camada
+P2P não aumenta o frame.
 
 ## 1. Unidades
 
@@ -48,6 +75,7 @@ offset  0        1        2        3
 | Nack | `0x03` | sequência rejeitada | `0x00` |
 | Start | `0x04` | `0x00` | `0x00` |
 | Finish | `0x05` | sequência atual do TX | `0x00` |
+| Abort | `0x06` | `0x00` | `0x00` |
 
 CRC-8: poly `0x07`, init `0x00`, sem reflexão, sem xor-out, sobre
 `TYPE || SEQ || DATA`.
@@ -57,11 +85,11 @@ CRC-8: poly `0x07`, init `0x00`, sem reflexão, sem xor-out, sobre
 CRC válido ≠ semanticamente válido. Um `Frame` só existe se **os dois**
 valerem.
 
-Frames de controle (`ACK`, `NACK`, `START`, `FINISH`) devem ter
-`DATA = 0`. `START` deve ter `SEQ = 0`.
+Frames de controle (`ACK`, `NACK`, `START`, `FINISH`, `ABORT`) devem ter
+`DATA = 0`. `START` e `ABORT` devem ter `SEQ = 0`.
 
 Os construtores públicos são `Frame::data`, `Frame::ack`, `Frame::nack`,
-`Frame::start` e `Frame::finish`. Não há `Frame::new` público.
+`Frame::start`, `Frame::finish` e `Frame::abort`. Não há `Frame::new` público.
 `Frame::from_bytes` rejeita um frame com CRC válido que quebre essas
 regras (`FrameError::InvalidSemantics`). Não há caminho `unchecked`.
 
@@ -73,7 +101,7 @@ regras (`FrameError::InvalidSemantics`). Não há caminho `unchecked`.
 
 `previous(0) == 255`. O wraparound faz parte do protocolo, não é erro.
 
-## 4. Sessão (START / DATA / FINISH)
+## 4. Sessão (START / DATA / FINISH / ABORT)
 
 Uma transferência é uma sessão explícita:
 
@@ -107,7 +135,37 @@ Depois de `Finished`:
 - `DATA` atrasado é ignorado (não entrega, não NACKa)
 - frame corrompido é ignorado (não NACKa)
 - `FINISH` com a sequência fechada é reconfirmado
+- `ABORT` é ignorado (a sessão já está fechada)
 - `START` abre uma sessão nova
+
+`ABORT` é um frame de primeira classe (`TYPE = 0x06`). O envelope não
+cresce. Não existe cancelamento fora do frame: todo evento da sessão
+é o mesmo fluxo `TYPE | SEQ | DATA | CRC`.
+
+```
+TX                              RX
+──                              ──
+ABORT  ─────────────────────►   ACK 0, cancela, descarta DATA pendente
+       ◄─────────────────────   ACK 0
+```
+
+`ABORT` é confiável como `FINISH`: o sender espera `ACK(0)`. Um `ABORT`
+perdido é retransmitido. Um `ABORT` duplicado é reconfirmado.
+
+Semântica:
+
+- `offer_abort` no TX descarta qualquer DATA/START/FINISH em voo,
+  inclusive no meio da escrita ou do retry, e envia `ABORT` (`SEQ = 0`).
+- Um `ABORT` recebido durante retransmissão ganha: o DATA em voo é
+  descartado.
+- O RX confirma com ACK 0, trava o estado abortado e zera
+  `expected_seq`.
+- Depois do abort: DATA atrasado e frames corrompidos são ignorados
+  (mesmo latch do FINISH). `START` reabre a sessão em seq 0, inclusive
+  no wrap `255 → 0`.
+- Um `ABORT` do peer visto no caminho de controle do TX cancela localmente
+  sem enviar um segundo `ABORT`. Quem escreve o ACK é o RX do mesmo
+  endpoint.
 
 Um identificador de sessão **não** entra no frame de 4 bytes. Uma
 versão futura pode negociá-lo com frames extras depois do `START`. Não
@@ -135,7 +193,9 @@ O ACK perdido é o caso que mais mente: o RX já avançou. O retransmit
 **não** pode entregar o byte de novo. `DuplicateIgnored` + re-ACK.
 
 CRC, TYPE ou semântica inválidos no RX **não** são erro da aplicação.
-NACK do `expected` atual, `PollOutcome::Rejected`, continuar o poll.
+NACK do `expected` atual, continuar o poll. Falha de CRC devolve
+`PollOutcome::CrcRejected`; `SEQ` errado ou TYPE/semântica inválidos
+devolvem `PollOutcome::Rejected`. Os dois enviam NACK.
 
 ### ACK/NACK formal no TX
 
@@ -155,7 +215,7 @@ NACK do `expected` atual, `PollOutcome::Rejected`, continuar o poll.
                  ┌─────────┐
                  │  IDLE   │
                  └────┬────┘
-                      │ offer / offer_start / offer_finish
+                      │ offer / offer_start / offer_finish / offer_abort
                       ▼
                  ┌─────────┐
                  │ SENDING │
@@ -167,11 +227,11 @@ NACK do `expected` atual, `PollOutcome::Rejected`, continuar o poll.
                       │
              ┌────────┼────────┐
              │        │        │
-         ACK(cur)  NACK(cur)  TIMEOUT
+         ACK(cur)  NACK(cur)  TIMEOUT / ABORT do peer
              │        │        │
              ▼        └────┬───┘
            IDLE            │
-      (ou Finished)        ▼
+      (Finished/Aborted)   ▼
                        RETRYING
                            │
                            ▼
@@ -199,17 +259,18 @@ ACK/NACK de outra sequência e frames inválidos permanecem em
                  └─────┬──────┘
            ┌───────────┼───────────┐
            │           │           │
-         DATA        START       FINISH
-           │           │           │
-           ▼           ▼           ▼
-      ACK / NACK    ACK 0       ACK seq
-           │           │           │
-           ▼           ▼           ▼
-         IDLE        IDLE       FINISHED
+         DATA        START       FINISH      ABORT
+           │           │           │           │
+           ▼           ▼           ▼           ▼
+      ACK / NACK    ACK 0       ACK seq      ACK 0
+           │           │           │           │
+           ▼           ▼           ▼           ▼
+         IDLE        IDLE       FINISHED    ABORTED
 ```
 
 Um `FINISH` duplicado depois de `FINISHED` é reconfirmado com ACK.
-`START` depois de `FINISHED` abre uma sessão nova.
+`START` depois de `FINISHED` ou `ABORTED` abre uma sessão nova. `ABORT`
+depois de `FINISHED` é ignorado.
 
 ## 7. Injeção de falhas
 
@@ -225,8 +286,37 @@ pode:
 - **DELAY DATA** — leituras devolvem `Ok(None)` por N ticks, depois o
   frame
 - **DROP FINISH / ACK de FINISH** — FINISH é retransmitido até o ACK
+- **ABORT durante DATA / retry** — o abort ganha; o DATA em voo some
+- **ABORT depois de FINISH** — ignorado
+- **START depois de ABORT** — sessão nova em seq 0, inclusive `255 → 0`
 
 Nenhum desses modos pode corromper o fluxo visto pelo `ByteSink`.
+
+## 7.1 Pump e SessionStats
+
+A `Pump` é um passo cooperativo: `rx.poll()` e depois `tx.poll()`. Ela
+nunca entra em loop dentro de `poll`. `Pump::send_all` é só esse loop
+empilhado pelo caller. O `stream::send_all` scriptado ainda espera
+ACKs no próprio transporte do sender.
+
+`SessionStats` fica na pump (`Copy`, só stack, sem log):
+
+| Campo | Significado |
+|-------|-------------|
+| `bytes_delivered` | Bytes de payload que o RX entregou depois de escrever o ACK |
+| `frames_sent` | Frames cujos quatro bytes saíram do `OutBuf` do TX |
+| `retries` | Vezes que o sender entrou em retransmissão |
+| `nacks` | NACKs gerados pelo receptor |
+| `duplicates` | DATA duplicado reconfirmado sem entregar |
+| `crc_errors` | Rejeições de CRC (também contam em `nacks`) |
+| `ticks` | Quantas vezes `Pump::poll` foi chamado |
+
+`PumpEvent` de um passo, do mais alto: `Aborted` > `Completed` >
+`Received(u8)` > `Sent` > `Progress` > `Idle`.
+
+Falha de CRC devolve `PollOutcome::CrcRejected`; `SEQ` errado ou
+TYPE/semântica inválidos devolvem `PollOutcome::Rejected`. Os dois
+enviam NACK.
 
 ## 8. ByteSource / ByteSink
 
@@ -263,17 +353,19 @@ O protocolo de transporte já é uma máquina de registradores de 8 bits
 ```
 PSICOSE NODE
 0x00 ───── 0xEF    application scratch
-0xF0               TX sequence
-0xF1               RX sequence
-0xF2               TX retries
-0xF3               RX state
-0xF4               CRC state
-0xF5               timeout ticks
-0xF6 ───── 0xFF    reserved
+0xF0               TX_SEQ
+0xF1               RX_SEQ
+0xF2               BYTES_LO
+0xF3               BYTES_HI
+0xF4               RETRIES
+0xF5               NACKS
+0xF6               CRC_ERRORS
+0xF7               DUPLICATES
+0xF8 ───── 0xFF    reserved
 ```
 
-Endereço = `u8`, dado = `u8`, memória = 256 bytes. Ainda não é uma VM;
-é o teto de estado que o 0.2.2 se recusa a ultrapassar.
+Endereço = `u8`, dado = `u8`, memória = 256 bytes. Ainda não é uma VM.
+`SessionStats` é a forma em software desses registradores.
 
 ## 10. Janela (`N ≤ 8`)
 
@@ -292,17 +384,186 @@ Slot livre não basta: o SEQ tem de ficar dentro dessa faixa.
 RX aceita SEQ em [expected, expected+N) e guarda o payload.
 RX reconfirma SEQ em [expected-N, expected) sem entregar.
 RX entrega só o prefixo em ordem do buffer.
-START / FINISH continuam stop-and-wait (janela vazia para FINISH).
-FINISH ainda exige SEQ == expected (sem buracos).
+START / FINISH / ABORT continuam stop-and-wait (janela vazia para
+FINISH). ABORT esvazia a janela. FINISH ainda exige SEQ == expected
+(sem buracos).
 ```
 
 `WindowFull` quer dizer: faça poll até um ACK liberar um slot, depois
 ofereça de novo.
 
-## 11. Fora deste documento
+## 11. Camada P2P (módulo `p2p`)
+
+Mesma crate. Mesmo orçamento `no_std` / sem heap / sem `unsafe`.
+Identidade, sessões, streams e mensagens são **bytes de payload**. O
+frame de 4 bytes não muda e nada dessa camada entra nele.
+
+Comece por `psicose::prelude::*`. `PeerSession` nunca toca um
+transporte: produz e consome bytes. O caller os move com `Pump`,
+`send_bytes` ou qualquer outra coisa. `PeerSession` cabe em ≤ 128
+bytes.
+
+### 11.1 PeerId
+
+Identidade de 64 bits (`[u8; 8]`). Construa com `PeerId::from([u8; 8])`.
+Como os bytes nascem (aleatório, hash de chave, serial) é assunto da
+aplicação. O frame físico não carrega isso.
+
+### 11.2 Hello (12 bytes de payload)
+
+Enviado como DATA comum logo depois do START:
+
+```
+┌────────────┬─────────┬────────────┬──────────────┐
+│ PeerId (8) │ ver (1) │ janela (1) │ features (2) │
+└────────────┴─────────┴────────────┴──────────────┘
+```
+
+`SessionConfig` são os 4 últimos bytes: `ver | janela | features_hi |
+features_lo`. Versão `0` e janela fora de `1..=8` são rejeitadas
+(`HandshakeError`). `max_window` é limitado a `1..=8` no construtor.
+`SessionConfig::DEFAULT` é versão 1, janela 8, `STREAM`.
+`SessionConfig::offer(4, features)` preenche a versão.
+
+### 11.3 Capabilities (`u16`, big-endian no hello)
+
+CRC **não** é capability. O frame de transporte sempre o carrega.
+
+| Bit | Nome | Significado |
+|-----|------|-------------|
+| 0 | `WINDOW` | Selective-repeat (`N ≤ 8`) |
+| 1 | `STREAM` | Streams lógicos sobre a sessão |
+| 2 | `FORUM` | Mensagens de fórum |
+| 3 | `COMPRESSION` | Compressão de payload (acima do transporte) |
+| 4 | `ENCRYPTION` | Criptografia de payload (acima do transporte) |
+| 5 | `FRAGMENTATION` | Fragmentação de mensagem (`Fragmenter`) |
+
+Bits desconhecidos ficam como estão e morrem na interseção com um
+peer que não os liga.
+
+A negociação é determinística e não tem rodada extra: versão mínima,
+janela mínima, interseção dos bits. Os dois lados computam o mesmo
+resultado. No código: `Capabilities::STREAM | Capabilities::WINDOW`.
+
+### 11.4 Estados de PeerSession
+
+```
+Disconnected ──connect()──► Connecting ──on_hello()──► Established
+     ▲                                                     │
+     │                                                close() / abort()
+     └── closed() ◄── Closing ◄────────────────────────────┤
+                                                           ▼
+                                                        Aborted
+                                                           │
+                                                      connect()
+                                                           ▼
+                                                      Connecting
+```
+
+| Estado | Contraparte no transporte |
+|--------|---------------------------|
+| `Disconnected` | Idle / depois do ACK de FINISH |
+| `Connecting` | START em voo; nosso hello saiu |
+| `Established` | Hellos cruzados; DATA pode fluir |
+| `Closing` | FINISH em voo |
+| `Aborted` | ABORT enviado ou recebido |
+
+`on_hello` devolve `Ok(Some(reply))` no lado que aceita (precisa
+enviar a resposta) e `Ok(None)` quando completa um connect que nós
+iniciamos. `record_stats` copia `SessionStats` da pump.
+
+### 11.5 Streams e mensagens
+
+Não misture os contadores:
+
+| Nome | Tamanho | Dono | Significado |
+|------|---------|------|-------------|
+| `SEQ` | `u8` | transporte | qual frame DATA |
+| `StreamId` | `u8` | aplicação | qual conversa |
+| `MessageId` | `u16` | aplicação | qual mensagem no stream |
+| `fragment` | `u16` | aplicação | qual pedaço dessa mensagem |
+
+O stream 0 é reservado para controle de sessão. Os outros mapeamentos
+são política da aplicação (fórum, arquivo, chat…).
+
+Cabeçalho de mensagem — 7 bytes de payload por fragmento:
+
+```
+┌────────────┬────────────────┬───────────────┬───────────┬─────────┐
+│ stream (1) │ message id (2) │ fragmento (2) │ flags (1) │ len (1) │
+└────────────┴────────────────┴───────────────┴───────────┴─────────┘
+```
+
+Bit 0 das flags = último fragmento. Os demais bits são reservados e
+rejeitados (`HeaderError::Flags`). Ids em big-endian.
+
+O `Fragmenter` empresta o payload do caller e devolve
+`(cabeçalho, pedaço)` até o último fragmento. Tamanho de pedaço `0`
+vale 1. Payload vazio ainda gera um fragmento vazio e último, para o
+receptor ver que a mensagem existe. Um blob de 4 GB e um post de 11
+bytes usam o mesmo iterador.
+
+### 11.6 PeerTable, PeerLink, Wire
+
+`PeerTable<N>` é `[Option<PeerEntry>; N]` com `1 ≤ N ≤ 8`. Sem `Vec`.
+
+| Chamada | Significado |
+|---------|-------------|
+| `PeerTable::new(id)` | Tabela vazia. Oferece `SessionConfig::DEFAULT` (versão 1, janela 8, `STREAM`). |
+| `PeerTable::with(id, cfg)` | Igual, config explícito. `SessionConfig::offer(4, features)` preenche a versão. |
+| `table.connect()` | Ocupa um slot livre e devolve o hello. |
+| `table.accept(hello)` | Instala um hello incoming. |
+| `table.find(id)` | Acha o vizinho. |
+
+`PeerLink` é o lado ao vivo: uma `Pump` mais a máquina do hello.
+
+```text
+connect:  START → hello(12) → espera hello → Established
+accept:   espera hello → START → hello(12) → Established
+```
+
+`PeerLink::poll(&mut table)` nunca entra em loop. Depois de
+`Established`, DATA é payload comum (`LinkEvent::Received`). Use
+`link.offer(byte)` — não `pump_mut().sender_mut().offer(byte)`.
+
+Um duplex físico tem **um** fluxo incoming. O sender precisa de
+ACK/NACK dele; o receiver precisa de DATA/START/FINISH/ABORT. Dois
+leitores no mesmo anel roubam bytes um do outro (o RX come o ACK
+que o TX está esperando). `Wire` (`DuplexWire`) demultiplexa frames
+completos numa faixa de controle (ACK/NACK → TX) e numa de payload
+(o resto, incluindo CRC ruim → RX, para ele poder NACK). O frame de
+4 bytes não muda.
+
+```rust
+use psicose::prelude::*;
+
+let wire = Wire::new();
+let (pump_a, pump_b) = wire.pumps();
+
+let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
+let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+
+let mut a = match PeerLink::connect(&mut alice, pump_a) {
+    Ok(link) => link,
+    Err(_) => return,
+};
+let mut b = PeerLink::accept(&bob, pump_b);
+let _ = (a.poll(&mut alice), b.poll(&mut bob));
+```
+
+Um driver UART de verdade faz o mesmo corte: `Pump::on(tx, rx)`.
+
+### 11.7 Ainda não (aplicações desta camada)
+
+Roteamento, store-and-forward, gossip (`SeenSet<N>`), assinaturas,
+hash de conteúdo, backpressure / prioridade. Ficam fora do transporte
+e fora do frame de 4 bytes.
+
+## 12. Fora deste documento
 
 - SessionId dentro do frame de 4 bytes
 - UART / SPI / CAN / rádio
 - `psicose::File`
 
-Ordem: janela está aqui → source/sink concretos → fio real.
+Ordem: transporte + identidade/sessão/stream P2P estão aqui →
+discovery / gossip → fórum.
