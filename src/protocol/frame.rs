@@ -195,9 +195,9 @@ mod tests {
 
     #[test]
     fn roundtrip_data_frame() {
-        let frame = Frame::data(42, 0xAA);
+        let frame = Frame::data(42, b'A');
         assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
-        assert_eq!(frame.payload(), 0xAA);
+        assert_eq!(frame.payload(), b'A');
     }
 
     #[test]

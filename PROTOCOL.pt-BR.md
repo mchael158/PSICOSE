@@ -405,9 +405,11 @@ bytes.
 
 ### 11.1 PeerId
 
-Identidade de 64 bits (`[u8; 8]`). Construa com `PeerId::from([u8; 8])`.
-Como os bytes nascem (aleatório, hash de chave, serial) é assunto da
-aplicação. O frame físico não carrega isso.
+Identidade de 64 bits (`[u8; 8]`). `PeerId::from_label(b"alice")`
+completa (ou corta) um nome para 8 bytes. Bytes crus continuam
+válidos: `PeerId::from([u8; 8])`. Como eles nascem (nome, aleatório,
+hash de chave, serial) é assunto da aplicação. O frame físico não
+carrega isso.
 
 ### 11.2 Hello (12 bytes de payload)
 
@@ -433,7 +435,7 @@ CRC **não** é capability. O frame de transporte sempre o carrega.
 |-----|------|-------------|
 | 0 | `WINDOW` | Selective-repeat (`N ≤ 8`) |
 | 1 | `STREAM` | Streams lógicos sobre a sessão |
-| 2 | `FORUM` | Mensagens de fórum |
+| 2 | `FORUM` | Mensagens da aplicação (não é um fórum) |
 | 3 | `COMPRESSION` | Compressão de payload (acima do transporte) |
 | 4 | `ENCRYPTION` | Criptografia de payload (acima do transporte) |
 | 5 | `FRAGMENTATION` | Fragmentação de mensagem (`Fragmenter`) |
@@ -483,8 +485,10 @@ Não misture os contadores:
 | `MessageId` | `u16` | aplicação | qual mensagem no stream |
 | `fragment` | `u16` | aplicação | qual pedaço dessa mensagem |
 
-O stream 0 é reservado para controle de sessão. Os outros mapeamentos
-são política da aplicação (fórum, arquivo, chat…).
+O stream 0 é reservado para controle de sessão (`StreamId::CONTROL`).
+O stream de dados da aplicação usual desta crate é `StreamId::FORUM`
+(1) — um nome reserva, não um produto de fórum. Os outros mapeamentos
+continuam política da aplicação.
 
 Cabeçalho de mensagem — 7 bytes de payload por fragmento:
 
@@ -498,10 +502,11 @@ Bit 0 das flags = último fragmento. Os demais bits são reservados e
 rejeitados (`HeaderError::Flags`). Ids em big-endian.
 
 O `Fragmenter` empresta o payload do caller e devolve
-`(cabeçalho, pedaço)` até o último fragmento. Tamanho de pedaço `0`
-vale 1. Payload vazio ainda gera um fragmento vazio e último, para o
-receptor ver que a mensagem existe. Um blob de 4 GB e um post de 11
-bytes usam o mesmo iterador.
+`(cabeçalho, pedaço)` até o último fragmento. O `Defragmenter` escreve
+esses bytes de volta num buffer do caller, um byte de payload por vez
+(`push`). Tamanho de pedaço `0` vale 1. Payload vazio ainda gera um
+fragmento vazio e último, para o receptor ver que a mensagem existe.
+Um blob de 4 GB e um post de 11 bytes usam o mesmo iterador.
 
 ### 11.6 PeerTable, PeerLink, Wire
 
@@ -510,7 +515,7 @@ bytes usam o mesmo iterador.
 | Chamada | Significado |
 |---------|-------------|
 | `PeerTable::new(id)` | Tabela vazia. Oferece `SessionConfig::DEFAULT` (versão 1, janela 8, `STREAM`). |
-| `PeerTable::with(id, cfg)` | Igual, config explícito. `SessionConfig::offer(4, features)` preenche a versão. |
+| `PeerTable::with(id, cfg)` | Igual, config explícito. `SessionConfig::FORUM` ou `SessionConfig::offer(4, features)`. |
 | `table.connect()` | Ocupa um slot livre e devolve o hello. |
 | `table.accept(hello)` | Instala um hello incoming. |
 | `table.find(id)` | Acha o vizinho. |
@@ -540,8 +545,8 @@ use psicose::prelude::*;
 let wire = Wire::new();
 let (pump_a, pump_b) = wire.pumps();
 
-let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
-let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
+let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
 
 let mut a = match PeerLink::connect(&mut alice, pump_a) {
     Ok(link) => link,
@@ -549,6 +554,32 @@ let mut a = match PeerLink::connect(&mut alice, pump_a) {
 };
 let mut b = PeerLink::accept(&bob, pump_b);
 let _ = (a.poll(&mut alice), b.poll(&mut bob));
+```
+
+O mesmo par move bytes A→B. Não é um fórum. Executável:
+`examples/forum.rs`. Teste: `tests/forum.rs`.
+
+```rust
+use psicose::prelude::*;
+
+let cfg = SessionConfig::FORUM;
+let wire = Wire::new();
+let (pump_a, pump_b) = wire.pumps();
+
+let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
+let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);
+
+let mut a = match PeerLink::connect(&mut alice, pump_a) {
+    Ok(link) => link,
+    Err(_) => return,
+};
+let mut b = PeerLink::accept(&bob, pump_b);
+let _ = (a.poll(&mut alice), b.poll(&mut bob));
+
+let ping = b"ping";
+let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(1), ping, 4);
+let mut board = [0u8; 32];
+let mut inbox = Defragmenter::new(&mut board);
 ```
 
 Um driver UART de verdade faz o mesmo corte: `Pump::on(tx, rx)`.

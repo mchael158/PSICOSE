@@ -1,4 +1,5 @@
 //! Heapless in-memory duplex used by integration tests. No `Vec`, no threads.
+#![allow(dead_code)]
 
 use core::cell::RefCell;
 
@@ -94,11 +95,7 @@ impl ByteTransport for End<'_> {
     }
 }
 
-pub fn pump_rx<T: ByteTransport>(
-    rx: &mut Receiver<T>,
-    out: &mut [u8],
-    filled: &mut usize,
-) -> bool {
+pub fn pump_rx<T: ByteTransport>(rx: &mut Receiver<T>, out: &mut [u8], filled: &mut usize) -> bool {
     match rx.poll() {
         Ok(PollOutcome::Delivered(byte)) => {
             if *filled < out.len() {
@@ -214,4 +211,107 @@ pub fn abort_coop<Tx, Rx>(
         }
         let _ = pump_rx(receiver, out, filled);
     }
+}
+
+#[allow(dead_code)]
+pub type Link<'w> = psicose::PeerLink<psicose::DuplexPort<'w>, psicose::DuplexPort<'w>>;
+
+#[allow(dead_code)]
+pub fn established<const N: usize>(
+    a: &mut Link<'_>,
+    alice: &mut psicose::PeerTable<N>,
+    b: &mut Link<'_>,
+    bob: &mut psicose::PeerTable<N>,
+) -> bool {
+    use psicose::LinkEvent;
+
+    let mut a_ok = false;
+    let mut b_ok = false;
+    let mut i = 0usize;
+    while i < 100_000 {
+        i += 1;
+        match a.poll(alice) {
+            Ok(LinkEvent::Established) => a_ok = true,
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        match b.poll(bob) {
+            Ok(LinkEvent::Established) => b_ok = true,
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        if a_ok && b_ok {
+            return true;
+        }
+    }
+    false
+}
+
+#[allow(dead_code)]
+pub fn send<const N: usize>(
+    tx: &mut Link<'_>,
+    tx_table: &mut psicose::PeerTable<N>,
+    rx: &mut Link<'_>,
+    rx_table: &mut psicose::PeerTable<N>,
+    id: u16,
+    body: &[u8],
+    inbox: &mut psicose::Defragmenter<'_>,
+) -> bool {
+    use psicose::{Fragmenter, MessageId, StreamId};
+
+    inbox.reset();
+    let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(id), body, 4);
+    while let Some((header, chunk)) = frag.next_fragment() {
+        for b in header.to_bytes() {
+            if !offer(tx, tx_table, rx, rx_table, b, inbox) {
+                return false;
+            }
+        }
+        for &b in chunk {
+            if !offer(tx, tx_table, rx, rx_table, b, inbox) {
+                return false;
+            }
+        }
+    }
+    inbox.is_complete()
+}
+
+#[allow(dead_code)]
+fn offer<const N: usize>(
+    tx: &mut Link<'_>,
+    tx_table: &mut psicose::PeerTable<N>,
+    rx: &mut Link<'_>,
+    rx_table: &mut psicose::PeerTable<N>,
+    byte: u8,
+    inbox: &mut psicose::Defragmenter<'_>,
+) -> bool {
+    use psicose::{LinkEvent, TxState};
+
+    let mut hold = Some(byte);
+    let mut steps = 0usize;
+    while steps < 20_000 {
+        steps += 1;
+        if let Some(b) = hold {
+            if tx.offer(b).is_ok() {
+                hold = None;
+            }
+        }
+        match tx.poll(tx_table) {
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        match rx.poll(rx_table) {
+            Ok(LinkEvent::Received(got)) => {
+                if inbox.push(got).is_err() {
+                    return false;
+                }
+            }
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        if hold.is_none() && tx.pump().sender().state() == TxState::Idle {
+            return true;
+        }
+    }
+    false
 }

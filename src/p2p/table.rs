@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn connect_fills_then_full() {
-        let mut t = PeerTable::<2>::with(PeerId::from([1; 8]), cfg());
+        let mut t = PeerTable::<2>::with(PeerId::from_label(b"alice"), cfg());
         assert!(matches!(t.connect(), Ok((0, _))));
         assert!(matches!(t.connect(), Ok((1, _))));
         assert_eq!(t.connect(), Err(TableError::Full));
@@ -279,30 +279,30 @@ mod tests {
 
     #[test]
     fn accept_then_find_remote() {
-        let mut a = PeerSession::new(PeerId::new([0xAA; 8]), cfg());
+        let mut a = PeerSession::new(PeerId::from_label(b"alice"), cfg());
         let hello = a.connect();
-        let mut t = PeerTable::<4>::with(PeerId::from([0xBB; 8]), cfg());
+        let mut t = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg());
         let (slot, _reply) = match t.accept(&hello) {
             Ok(v) => v,
             Err(_) => return,
         };
         assert_eq!(slot, 0);
-        assert_eq!(t.find(PeerId::from([0xAA; 8])), Some(0));
+        assert_eq!(t.find(PeerId::from_label(b"alice")), Some(0));
         assert_eq!(t.established(), 1);
         assert_eq!(t.accept(&hello), Err(TableError::Duplicate));
     }
 
     #[test]
     fn finish_connect_binds_the_remote() {
-        let mut t = PeerTable::<2>::with(PeerId::from([0xAA; 8]), cfg());
+        let mut t = PeerTable::<2>::with(PeerId::from_label(b"alice"), cfg());
         let (slot, _) = match t.connect() {
             Ok(v) => v,
             Err(_) => return,
         };
-        let b = PeerSession::new(PeerId::new([0xBB; 8]), cfg());
+        let b = PeerSession::new(PeerId::from_label(b"bob"), cfg());
         let hello_b = b.hello_bytes();
         assert_eq!(t.finish_connect(slot, &hello_b), Ok(()));
-        assert_eq!(t.find(PeerId::from([0xBB; 8])), Some(slot));
+        assert_eq!(t.find(PeerId::from_label(b"bob")), Some(slot));
         assert_eq!(t.established(), 1);
     }
 

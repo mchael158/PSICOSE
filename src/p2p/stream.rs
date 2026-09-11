@@ -18,12 +18,12 @@
 //!           │       │        │
 //!        stream0 stream1  stream2
 //!           │       │        │
-//!        control   forum    file
+//!        control   data     file
 //! ```
 //!
-//! A forum post does not fit in one byte — and does not need to. The
-//! [`Fragmenter`] cuts it into `header + chunk` packets; PSICOSE still
-//! only ever sees the next byte.
+//! An application message does not fit in one byte — and does not need
+//! to. The [`Fragmenter`] cuts it into `header + chunk` packets; PSICOSE
+//! still only ever sees the next byte.
 
 /// Identifies a logical conversation over one link.
 ///
@@ -34,6 +34,10 @@ pub struct StreamId(u8);
 impl StreamId {
     /// Stream 0: session control messages (hello, ping, credit…).
     pub const CONTROL: StreamId = StreamId(0);
+
+    /// Application data stream (id 1). A stand-in name; this crate does
+    /// not implement a forum. Mapping is still application policy.
+    pub const FORUM: StreamId = StreamId(1);
 
     /// An application-defined stream.
     pub const fn new(id: u8) -> Self {
@@ -211,6 +215,167 @@ impl<'a> Fragmenter<'a> {
     }
 }
 
+/// Why a [`Defragmenter`] rejected a byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefragError {
+    /// Reserved header flag bits.
+    Header(HeaderError),
+    /// The caller buffer cannot hold this message.
+    Overflow,
+    /// Fragment index, stream, or message id did not follow the first header.
+    OutOfOrder,
+    /// A byte arrived after the last fragment, before [`Defragmenter::reset`].
+    Closed,
+}
+
+impl core::fmt::Display for DefragError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DefragError::Header(e) => write!(f, "{e}"),
+            DefragError::Overflow => write!(f, "defragmenter buffer full"),
+            DefragError::OutOfOrder => write!(f, "fragment out of order"),
+            DefragError::Closed => write!(f, "message already complete"),
+        }
+    }
+}
+
+/// Rebuilds one message into a caller-owned buffer, one payload byte at a time.
+///
+/// Pair of [`Fragmenter`]. Owns nothing: the post lives in the slice you pass.
+pub struct Defragmenter<'a> {
+    buf: &'a mut [u8],
+    filled: usize,
+    hdr: [u8; HEADER_LEN],
+    hdr_at: usize,
+    current: Option<MessageHeader>,
+    chunk_got: u8,
+    expect_frag: u16,
+    stream: Option<StreamId>,
+    message: Option<MessageId>,
+    complete: bool,
+}
+
+impl<'a> Defragmenter<'a> {
+    /// Collects into `buf`. The message must fit; overflow is an error.
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Defragmenter {
+            buf,
+            filled: 0,
+            hdr: [0; HEADER_LEN],
+            hdr_at: 0,
+            current: None,
+            chunk_got: 0,
+            expect_frag: 0,
+            stream: None,
+            message: None,
+            complete: false,
+        }
+    }
+
+    /// Clears state so the same buffer can take the next message.
+    pub fn reset(&mut self) {
+        self.filled = 0;
+        self.hdr_at = 0;
+        self.current = None;
+        self.chunk_got = 0;
+        self.expect_frag = 0;
+        self.stream = None;
+        self.message = None;
+        self.complete = false;
+    }
+
+    /// `true` after the last fragment's body has been written.
+    pub const fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Bytes assembled so far (the whole message when [`is_complete`](Self::is_complete)).
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.filled]
+    }
+
+    /// Stream locked in by the first fragment.
+    pub const fn stream(&self) -> Option<StreamId> {
+        self.stream
+    }
+
+    /// Message id locked in by the first fragment.
+    pub const fn message(&self) -> Option<MessageId> {
+        self.message
+    }
+
+    /// One payload byte from the live link. `Ok(true)` when the post is whole.
+    pub fn push(&mut self, byte: u8) -> Result<bool, DefragError> {
+        if self.complete {
+            return Err(DefragError::Closed);
+        }
+        if self.current.is_none() {
+            return self.push_header(byte);
+        }
+        if self.filled >= self.buf.len() {
+            return Err(DefragError::Overflow);
+        }
+        self.buf[self.filled] = byte;
+        self.filled += 1;
+        self.chunk_got = self.chunk_got.saturating_add(1);
+        let need = match self.current {
+            Some(h) => h.len,
+            None => return Err(DefragError::OutOfOrder),
+        };
+        if self.chunk_got >= need {
+            self.finish_chunk()
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn push_header(&mut self, byte: u8) -> Result<bool, DefragError> {
+        self.hdr[self.hdr_at] = byte;
+        self.hdr_at += 1;
+        if self.hdr_at < HEADER_LEN {
+            return Ok(false);
+        }
+        self.hdr_at = 0;
+        let header = match MessageHeader::from_bytes(self.hdr) {
+            Ok(h) => h,
+            Err(e) => return Err(DefragError::Header(e)),
+        };
+        if header.fragment != self.expect_frag {
+            return Err(DefragError::OutOfOrder);
+        }
+        match self.stream {
+            None => self.stream = Some(header.stream),
+            Some(s) if s != header.stream => return Err(DefragError::OutOfOrder),
+            Some(_) => {}
+        }
+        match self.message {
+            None => self.message = Some(header.message),
+            Some(m) if m != header.message => return Err(DefragError::OutOfOrder),
+            Some(_) => {}
+        }
+        self.current = Some(header);
+        self.chunk_got = 0;
+        if header.len == 0 {
+            self.finish_chunk()
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn finish_chunk(&mut self) -> Result<bool, DefragError> {
+        let header = match self.current.take() {
+            Some(h) => h,
+            None => return Err(DefragError::OutOfOrder),
+        };
+        if header.last {
+            self.complete = true;
+            return Ok(true);
+        }
+        self.expect_frag = self.expect_frag.wrapping_add(1);
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,18 +408,15 @@ mod tests {
 
     #[test]
     fn ola_mundo_fragments_into_three_pieces() {
-        // "Holá mundo" — the 11 bytes from the design discussion.
-        let post = [
-            0x48, 0x6F, 0x6C, 0xC3, 0xA1, 0x20, 0x6D, 0x75, 0x6E, 0x64, 0x6F,
-        ];
-        let mut frag = Fragmenter::new(StreamId::new(1), MessageId::new(42), &post, 4);
+        let post = "Holá mundo".as_bytes();
+        let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(42), post, 4);
 
         let mut rebuilt = [0u8; 16];
         let mut filled = 0usize;
         let mut count = 0u16;
         let mut saw_last = false;
         while let Some((header, chunk)) = frag.next_fragment() {
-            assert_eq!(header.stream, StreamId::new(1));
+            assert_eq!(header.stream, StreamId::FORUM);
             assert_eq!(header.message, MessageId::new(42));
             assert_eq!(header.fragment, count);
             assert_eq!(header.len as usize, chunk.len());
@@ -265,7 +427,7 @@ mod tests {
         }
         assert_eq!(count, 3);
         assert!(saw_last);
-        assert_eq!(&rebuilt[..filled], &post);
+        assert_eq!(&rebuilt[..filled], post);
     }
 
     #[test]
@@ -303,5 +465,31 @@ mod tests {
     #[test]
     fn message_id_wraps_independently_of_seq() {
         assert_eq!(MessageId::new(65535).next(), MessageId::new(0));
+    }
+
+    #[test]
+    fn defragmenter_rebuilds_what_fragmenter_cut() {
+        let post = "Holá mundo".as_bytes();
+        let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(42), post, 4);
+        let mut board = [0u8; 16];
+        let mut inbox = Defragmenter::new(&mut board);
+        while let Some((header, chunk)) = frag.next_fragment() {
+            let bytes = header.to_bytes();
+            let mut i = 0usize;
+            while i < bytes.len() {
+                assert_eq!(inbox.push(bytes[i]), Ok(false));
+                i += 1;
+            }
+            let mut j = 0usize;
+            while j < chunk.len() {
+                let last = header.last && j + 1 == chunk.len();
+                assert_eq!(inbox.push(chunk[j]), Ok(last));
+                j += 1;
+            }
+        }
+        assert_eq!(inbox.is_complete(), true);
+        assert_eq!(inbox.stream(), Some(StreamId::FORUM));
+        assert_eq!(inbox.message(), Some(MessageId::new(42)));
+        assert_eq!(inbox.as_slice(), post);
     }
 }

@@ -91,9 +91,11 @@ use psicose::prelude::*;
 
 | You write | Meaning |
 | --- | --- |
-| `PeerId::from([0xAA; 8])` | 8-byte identity. Never in the 4-byte frame. |
+| `PeerId::from_label(b"alice")` | 8-byte identity (padded). Never in the 4-byte frame. |
 | `PeerTable::<4>::new(id)` | Neighbors, `1 ≤ N ≤ 8`. Default: window 8 + `STREAM`. |
-| `PeerTable::with(id, cfg)` | Same table, explicit `SessionConfig`. |
+| `PeerTable::with(id, SessionConfig::FORUM)` | Same table, A↔B hello (`STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION`). |
+| `StreamId::FORUM` / `MessageId::new(1)` | Application conversation. Not `SEQ`. Not a forum. |
+| `Fragmenter` / `Defragmenter` | Cut any blob; rebuild it into a stack buffer. |
 | `SessionConfig::offer(4, features)` | Hello config. Version is `PROTOCOL_VERSION`. |
 | `Capabilities::STREAM \| Capabilities::WINDOW` | Feature bits. CRC is not negotiated. |
 | `Wire::new().pumps()` | In-memory A↔B. ACK/NACK → TX, DATA/START/FINISH/ABORT → RX. |
@@ -113,8 +115,8 @@ use psicose::prelude::*;
 let wire = Wire::new();
 let (pump_a, pump_b) = wire.pumps();
 
-let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
-let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
+let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
 
 let mut a = match PeerLink::connect(&mut alice, pump_a) {
     Ok(link) => link,
@@ -124,7 +126,34 @@ let mut b = PeerLink::accept(&bob, pump_b);
 let _ = (a.poll(&mut alice), b.poll(&mut bob));
 ```
 
-Override the default offer with
+The same link moves bytes A→B. This is not a forum — only payload:
+
+```rust
+use psicose::prelude::*;
+
+let cfg = SessionConfig::FORUM;
+let wire = Wire::new();
+let (pump_a, pump_b) = wire.pumps();
+
+let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
+let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);
+
+let mut a = match PeerLink::connect(&mut alice, pump_a) {
+    Ok(link) => link,
+    Err(_) => return,
+};
+let mut b = PeerLink::accept(&bob, pump_b);
+let _ = (a.poll(&mut alice), b.poll(&mut bob));
+
+let ping = b"ping";
+let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(1), ping, 4);
+let mut board = [0u8; 32];
+let mut inbox = Defragmenter::new(&mut board);
+```
+
+Runnable: `cargo run --example forum`. Test: `tests/forum.rs`.
+
+Override a custom offer with
 `PeerTable::with(id, SessionConfig::offer(4, Capabilities::STREAM | Capabilities::WINDOW))`.
 
 The 4-byte envelope is still just this:
@@ -132,7 +161,7 @@ The 4-byte envelope is still just this:
 ```rust
 use psicose::Frame;
 
-let frame = Frame::data(0, 0xAA);
+let frame = Frame::data(0, b'A');
 assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
 ```
 
@@ -173,6 +202,7 @@ cargo run --example jpeg_over_uart
 cargo run --example firmware_flash
 cargo run --example sensor_telemetry
 cargo run --example radio_windowed
+cargo run --example forum
 ```
 
 | Example | Real problem | What PSICOSE sees |
@@ -181,6 +211,7 @@ cargo run --example radio_windowed
 | `firmware_flash` | Host `firmware.bin` → MCU NOR flash, 1 byte programmed at a time | file bytes |
 | `sensor_telemetry` | DHT22 + battery ADC packed struct over a slow radio | 8-byte sample |
 | `radio_windowed` | 300-byte EEPROM dump; first DATA frame dropped | bytes, window `N=8` |
+| `forum` | Alice ↔ Bob: handshake, then bytes both ways | payload bytes |
 
 `firmware_flash` implements `ByteSource` on `std::fs::File` — that is the
 pattern for a 4 GB image. The crate still never owns the file.
@@ -192,7 +223,7 @@ cargo test
 ```
 
 See `tests/end_to_end.rs`, `tests/hostile.rs`, `tests/windowed.rs`,
-`tests/pump.rs`, and `tests/p2p.rs`.
+`tests/pump.rs`, `tests/p2p.rs`, and `tests/forum.rs`.
 
 ## License
 

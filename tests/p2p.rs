@@ -1,29 +1,16 @@
-//! The P2P layer riding the real transport: hello handshake and message
-//! fragments crossing a Pump, one wire byte per poll, no heap.
+//! The P2P layer riding the real transport: hello, a live link, and
+//! fragments as ordinary payload bytes.
 
 mod common;
 
-use core::cell::RefCell;
-
 use psicose::prelude::*;
 
-use common::{End, Wires};
+use common::established;
 
-/// Ships `payload` across a fresh cooperative link and collects what the
-/// receiver delivers. This is the transport doing its job; the P2P layer
-/// only ever sees bytes in, bytes out.
+/// Ships `payload` across a `Wire` and collects what the other pump delivers.
 fn move_bytes(payload: &[u8], out: &mut [u8]) -> usize {
-    let wires = RefCell::new(Wires::new());
-    let mut pump = Pump::on(
-        End {
-            wires: &wires,
-            is_a: true,
-        },
-        End {
-            wires: &wires,
-            is_a: false,
-        },
-    );
+    let wire = Wire::new();
+    let (mut tx, mut rx) = wire.pumps();
 
     let mut i = 0usize;
     let mut hold: Option<u8> = None;
@@ -35,16 +22,17 @@ fn move_bytes(payload: &[u8], out: &mut [u8]) -> usize {
             hold = Some(payload[i]);
             i += 1;
         }
-        if pump.sender().state() == TxState::Idle {
+        if tx.sender().state() == TxState::Idle {
             if let Some(b) = hold.take() {
-                if pump.sender_mut().offer(b).is_err() {
+                if tx.sender_mut().offer(b).is_err() {
                     hold = Some(b);
                 }
             } else if i >= payload.len() {
-                let _ = pump.sender_mut().offer_finish();
+                let _ = tx.sender_mut().offer_finish();
             }
         }
-        match pump.poll() {
+        let _ = tx.poll();
+        match rx.poll() {
             Ok(PumpEvent::Received(b)) => {
                 if n < out.len() {
                     out[n] = b;
@@ -59,42 +47,14 @@ fn move_bytes(payload: &[u8], out: &mut [u8]) -> usize {
     n
 }
 
-fn handshake_pair<const N: usize>(
-    a: &mut PeerLink<DuplexPort<'_>, DuplexPort<'_>>,
-    table_a: &mut PeerTable<N>,
-    b: &mut PeerLink<DuplexPort<'_>, DuplexPort<'_>>,
-    table_b: &mut PeerTable<N>,
-) -> bool {
-    let mut a_ok = false;
-    let mut b_ok = false;
-    let mut i = 0usize;
-    while i < 100_000 {
-        i += 1;
-        match a.poll(table_a) {
-            Ok(LinkEvent::Established) => a_ok = true,
-            Ok(LinkEvent::Aborted) | Err(_) => return false,
-            Ok(_) => {}
-        }
-        match b.poll(table_b) {
-            Ok(LinkEvent::Established) => b_ok = true,
-            Ok(LinkEvent::Aborted) | Err(_) => return false,
-            Ok(_) => {}
-        }
-        if a_ok && b_ok {
-            return true;
-        }
-    }
-    false
-}
-
 #[test]
 fn hello_handshake_crosses_the_wire() {
     let mut a = PeerSession::new(
-        PeerId::from([0xAA; 8]),
+        PeerId::from_label(b"alice"),
         SessionConfig::DEFAULT.with_features(Capabilities::WINDOW | Capabilities::STREAM),
     );
     let mut b = PeerSession::new(
-        PeerId::from([0xBB; 8]),
+        PeerId::from_label(b"bob"),
         SessionConfig::offer(4, Capabilities::STREAM),
     );
 
@@ -111,52 +71,53 @@ fn hello_handshake_crosses_the_wire() {
     assert_eq!(a.on_hello(&wire), Ok(None));
     assert_eq!(a.state(), SessionState::Established);
 
-    assert_eq!(a.remote(), Some(PeerId::from([0xBB; 8])));
-    assert_eq!(b.remote(), Some(PeerId::from([0xAA; 8])));
+    assert_eq!(a.remote(), Some(PeerId::from_label(b"bob")));
+    assert_eq!(b.remote(), Some(PeerId::from_label(b"alice")));
     let expected = SessionConfig::offer(4, Capabilities::STREAM);
     assert_eq!(a.negotiated(), Some(expected));
     assert_eq!(b.negotiated(), Some(expected));
 }
 
 #[test]
-fn forum_post_is_fragmented_shipped_and_rebuilt() {
-    let post = [
-        0x48, 0x6F, 0x6C, 0xC3, 0xA1, 0x20, 0x6D, 0x75, 0x6E, 0x64, 0x6F,
-    ];
-    let mut frag = Fragmenter::new(StreamId::new(1), MessageId::new(42), &post, 4);
+fn message_fragments_cross_a_pump() {
+    let payload = b"ping";
+    let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(1), payload, 4);
+    let mut board = [0u8; 16];
+    let mut inbox = Defragmenter::new(&mut board);
 
-    let mut rebuilt = [0u8; 16];
-    let mut filled = 0usize;
     let mut fragments = 0u16;
     while let Some((header, chunk)) = frag.next_fragment() {
         let mut packet = [0u8; HEADER_LEN + 4];
+        let n = HEADER_LEN + chunk.len();
         packet[..HEADER_LEN].copy_from_slice(&header.to_bytes());
-        packet[HEADER_LEN..HEADER_LEN + chunk.len()].copy_from_slice(chunk);
+        packet[HEADER_LEN..n].copy_from_slice(chunk);
 
         let mut got = [0u8; HEADER_LEN + 4];
-        let n = move_bytes(&packet[..HEADER_LEN + chunk.len()], &mut got);
-        assert_eq!(n, HEADER_LEN + chunk.len());
+        assert_eq!(move_bytes(&packet[..n], &mut got), n);
 
         let mut hdr = [0u8; HEADER_LEN];
         hdr.copy_from_slice(&got[..HEADER_LEN]);
         assert_eq!(MessageHeader::from_bytes(hdr), Ok(header));
         assert_eq!(header.fragment, fragments);
 
-        let len = header.len as usize;
-        rebuilt[filled..filled + len].copy_from_slice(&got[HEADER_LEN..HEADER_LEN + len]);
-        filled += len;
+        let mut i = 0usize;
+        while i < n {
+            assert_eq!(inbox.push(got[i]).is_ok(), true);
+            i += 1;
+        }
         fragments += 1;
     }
 
-    assert_eq!(fragments, 3);
-    assert_eq!(&rebuilt[..filled], &post);
+    assert_eq!(fragments, 1);
+    assert_eq!(inbox.is_complete(), true);
+    assert_eq!(inbox.as_slice(), payload);
 }
 
 #[test]
 fn abort_then_reconnect_reuses_the_endpoint() {
     let cfg = SessionConfig::offer(2, Capabilities::STREAM);
-    let mut a = PeerSession::new(PeerId::from([1; 8]), cfg);
-    let mut b = PeerSession::new(PeerId::from([2; 8]), cfg);
+    let mut a = PeerSession::new(PeerId::from_label(b"alice"), cfg);
+    let mut b = PeerSession::new(PeerId::from_label(b"bob"), cfg);
 
     let hello = a.connect();
     let mut wire = [0u8; HELLO_LEN];
@@ -174,27 +135,25 @@ fn abort_then_reconnect_reuses_the_endpoint() {
     assert_eq!(move_bytes(&hello, &mut wire), HELLO_LEN);
     assert!(matches!(b.on_hello(&wire), Ok(Some(_))));
     assert_eq!(b.state(), SessionState::Established);
-    assert_eq!(b.remote(), Some(PeerId::from([1; 8])));
+    assert_eq!(b.remote(), Some(PeerId::from_label(b"alice")));
 }
 
 #[test]
 fn connect_and_accept_establish_a_and_b() {
-    let id_a = PeerId::from([0xAA; 8]);
-    let id_b = PeerId::from([0xBB; 8]);
+    let id_a = PeerId::from_label(b"alice");
+    let id_b = PeerId::from_label(b"bob");
     let mut alice = PeerTable::<4>::new(id_a);
     let mut bob = PeerTable::<4>::new(id_b);
 
     let wire = Wire::new();
     let (pump_a, pump_b) = wire.pumps();
-    let connected = PeerLink::connect(&mut alice, pump_a);
-    assert!(matches!(connected, Ok(_)));
-    let mut a = match connected {
+    let mut a = match PeerLink::connect(&mut alice, pump_a) {
         Ok(link) => link,
         Err(_) => return,
     };
     let mut b = PeerLink::accept(&bob, pump_b);
 
-    assert_eq!(handshake_pair(&mut a, &mut alice, &mut b, &mut bob), true);
+    assert_eq!(established(&mut a, &mut alice, &mut b, &mut bob), true);
     assert_eq!(a.session().state(), SessionState::Established);
     assert_eq!(b.session().state(), SessionState::Established);
     assert_eq!(a.session().remote(), Some(id_b));
@@ -208,20 +167,18 @@ fn connect_and_accept_establish_a_and_b() {
 
 #[test]
 fn established_link_delivers_a_data_byte() {
-    let mut alice = PeerTable::<2>::new(PeerId::from([1; 8]));
-    let mut bob = PeerTable::<2>::new(PeerId::from([2; 8]));
+    let mut alice = PeerTable::<2>::new(PeerId::from_label(b"alice"));
+    let mut bob = PeerTable::<2>::new(PeerId::from_label(b"bob"));
     let wire = Wire::new();
     let (pump_a, pump_b) = wire.pumps();
-    let connected = PeerLink::connect(&mut alice, pump_a);
-    assert!(matches!(connected, Ok(_)));
-    let mut a = match connected {
+    let mut a = match PeerLink::connect(&mut alice, pump_a) {
         Ok(link) => link,
         Err(_) => return,
     };
     let mut b = PeerLink::accept(&bob, pump_b);
-    assert_eq!(handshake_pair(&mut a, &mut alice, &mut b, &mut bob), true);
+    assert_eq!(established(&mut a, &mut alice, &mut b, &mut bob), true);
 
-    assert_eq!(a.offer(0x7E), Ok(()));
+    assert_eq!(a.offer(b'~'), Ok(()));
     let mut got = None;
     let mut i = 0usize;
     while i < 10_000 {
@@ -236,12 +193,12 @@ fn established_link_delivers_a_data_byte() {
             Err(_) => break,
         }
     }
-    assert_eq!(got, Some(0x7E));
+    assert_eq!(got, Some(b'~'));
 }
 
 #[test]
 fn table_of_one_rejects_a_second_connect() {
-    let mut table = PeerTable::<1>::new(PeerId::from([1; 8]));
+    let mut table = PeerTable::<1>::new(PeerId::from_label(b"alice"));
     assert!(matches!(table.connect(), Ok((0, _))));
     assert_eq!(table.connect(), Err(TableError::Full));
 }

@@ -17,13 +17,19 @@ mod link;
 use psicose::{SliceSink, SliceSource};
 
 fn main() {
-    // SOI + APP0 stub. A real capture is kilobytes; the path is identical.
-    let camera_ram: [u8; 20] = [
-        0xFF, 0xD8, // SOI
-        0xFF, 0xE0, // APP0
-        0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
-        0x00,
-    ];
+    // Tiny JPEG: SOI + APP0 "JFIF". A real capture is kilobytes; the path is identical.
+    let mut camera_ram = [0u8; 20];
+    camera_ram[0] = 0xFF;
+    camera_ram[1] = 0xD8; // start of image
+    camera_ram[2] = 0xFF;
+    camera_ram[3] = 0xE0; // APP0
+    camera_ram[4] = 0x00;
+    camera_ram[5] = 0x10; // APP0 length
+    camera_ram[6..11].copy_from_slice(b"JFIF\0");
+    camera_ram[11] = 1;
+    camera_ram[12] = 1;
+    camera_ram[15] = 1;
+    camera_ram[17] = 1;
 
     let mut src = SliceSource::new(&camera_ram);
     let mut host_file = [0u8; 20];

@@ -45,7 +45,7 @@ impl Capabilities {
     pub const WINDOW: Capabilities = Capabilities { bits: 1 << 0 };
     /// Byte streams over the session.
     pub const STREAM: Capabilities = Capabilities { bits: 1 << 1 };
-    /// Forum application messages.
+    /// Application messages. A bit in the hello, not a forum product.
     pub const FORUM: Capabilities = Capabilities { bits: 1 << 2 };
     /// Payload compression (above the transport).
     pub const COMPRESSION: Capabilities = Capabilities { bits: 1 << 3 };
@@ -120,6 +120,16 @@ impl SessionConfig {
     /// [`Capabilities::STREAM`].
     pub const DEFAULT: SessionConfig =
         SessionConfig::new(PROTOCOL_VERSION, MAX_WINDOW as u8, Capabilities::STREAM);
+
+    /// Window 8 plus stream, window, the app-message bit, and fragmentation.
+    /// Used by the A↔B demo; still not a forum.
+    pub const FORUM: SessionConfig = SessionConfig::offer(
+        MAX_WINDOW as u8,
+        Capabilities::STREAM
+            .with(Capabilities::WINDOW)
+            .with(Capabilities::FORUM)
+            .with(Capabilities::FRAGMENTATION),
+    );
 
     /// Builds a config, clamping `max_window` into `1..=MAX_WINDOW`.
     pub const fn new(protocol_version: u8, max_window: u8, features: Capabilities) -> Self {
@@ -409,10 +419,10 @@ mod tests {
     #[test]
     fn handshake_establishes_both_sides() {
         let mut a = PeerSession::new(
-            PeerId::new([0xAA; 8]),
+            PeerId::from_label(b"alice"),
             cfg(8, Capabilities::WINDOW.with(Capabilities::STREAM)),
         );
-        let mut b = PeerSession::new(PeerId::new([0xBB; 8]), cfg(4, Capabilities::STREAM));
+        let mut b = PeerSession::new(PeerId::from_label(b"bob"), cfg(4, Capabilities::STREAM));
 
         let hello_a = a.connect();
         assert_eq!(a.state(), SessionState::Connecting);
@@ -420,14 +430,14 @@ mod tests {
         let reply = b.on_hello(&hello_a);
         assert_eq!(reply, Ok(Some(b.hello_bytes())));
         assert_eq!(b.state(), SessionState::Established);
-        assert_eq!(b.remote(), Some(PeerId::new([0xAA; 8])));
+        assert_eq!(b.remote(), Some(PeerId::from_label(b"alice")));
 
         let Ok(Some(hello_b)) = reply else {
             return;
         };
         assert_eq!(a.on_hello(&hello_b), Ok(None));
         assert_eq!(a.state(), SessionState::Established);
-        assert_eq!(a.remote(), Some(PeerId::new([0xBB; 8])));
+        assert_eq!(a.remote(), Some(PeerId::from_label(b"bob")));
 
         let expected = cfg(4, Capabilities::STREAM);
         assert_eq!(a.negotiated(), Some(expected));
@@ -436,15 +446,15 @@ mod tests {
 
     #[test]
     fn hello_with_wrong_length_is_rejected() {
-        let mut s = PeerSession::new(PeerId::new([1; 8]), cfg(1, Capabilities::NONE));
+        let mut s = PeerSession::new(PeerId::from_label(b"solo"), cfg(1, Capabilities::NONE));
         assert_eq!(s.on_hello(&[0u8; 5]), Err(HandshakeError::Length));
         assert_eq!(s.state(), SessionState::Disconnected);
     }
 
     #[test]
     fn abort_leaves_the_session_reusable() {
-        let mut a = PeerSession::new(PeerId::new([1; 8]), cfg(2, Capabilities::STREAM));
-        let mut b = PeerSession::new(PeerId::new([2; 8]), cfg(2, Capabilities::STREAM));
+        let mut a = PeerSession::new(PeerId::from_label(b"alice"), cfg(2, Capabilities::STREAM));
+        let mut b = PeerSession::new(PeerId::from_label(b"bob"), cfg(2, Capabilities::STREAM));
 
         let hello = a.connect();
         assert!(matches!(b.on_hello(&hello), Ok(Some(_))));
@@ -458,7 +468,7 @@ mod tests {
 
     #[test]
     fn close_then_closed_returns_to_disconnected() {
-        let mut s = PeerSession::new(PeerId::new([1; 8]), cfg(1, Capabilities::NONE));
+        let mut s = PeerSession::new(PeerId::from_label(b"solo"), cfg(1, Capabilities::NONE));
         let _ = s.connect();
         s.close();
         assert_eq!(s.state(), SessionState::Closing);

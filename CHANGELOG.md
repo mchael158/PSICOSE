@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `PeerId::from_label(b"alice")` pads or truncates to 8 bytes. `Display`
+  prints the label when it is printable ASCII plus trailing zeros.
+- `StreamId::FORUM`, `SessionConfig::FORUM`, and `Defragmenter` (pair of
+  `Fragmenter`). Example `forum` and test `tests/forum.rs`: Alice ↔ Bob
+  handshake, then payload bytes both ways (`ping` / `pong`). Not a forum.
+
 ## 0.2.3 — 2026-09-11
 
 - `FrameType::Abort = 0x06` on the same 4-byte envelope (`SEQ = 0`).

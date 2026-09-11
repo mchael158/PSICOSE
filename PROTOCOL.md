@@ -396,9 +396,11 @@ transport: it produces and consumes bytes. The caller moves them with
 
 ### 11.1 PeerId
 
-64-bit identity (`[u8; 8]`). Construct with `PeerId::from([u8; 8])`.
-How the bytes are generated (random, hash of a key, serial) is the
-application's business. The wire frame does not carry it.
+64-bit identity (`[u8; 8]`). `PeerId::from_label(b"alice")` pads (or
+truncates) a name to 8 bytes. Raw bytes still work:
+`PeerId::from([u8; 8])`. How they are generated (name, random, hash of
+a key, serial) is the application's business. The wire frame does not
+carry it.
 
 ### 11.2 Hello (12 payload bytes)
 
@@ -424,7 +426,7 @@ CRC is **not** a capability. The transport frame always carries it.
 |-----|------|---------|
 | 0 | `WINDOW` | Selective-repeat (`N ≤ 8`) |
 | 1 | `STREAM` | Logical streams over the session |
-| 2 | `FORUM` | Forum application messages |
+| 2 | `FORUM` | Application messages (not a forum product) |
 | 3 | `COMPRESSION` | Payload compression (above the transport) |
 | 4 | `ENCRYPTION` | Payload encryption (above the transport) |
 | 5 | `FRAGMENTATION` | Message fragmentation (`Fragmenter`) |
@@ -474,8 +476,10 @@ Do not mix the counters:
 | `MessageId` | `u16` | application | which message in the stream |
 | `fragment` | `u16` | application | which piece of that message |
 
-Stream 0 is reserved for session control. Other mappings are
-application policy (forum, file, chat…).
+Stream 0 is reserved for session control (`StreamId::CONTROL`). This
+crate's usual application-data stream is `StreamId::FORUM` (1) — a
+stand-in name, not a forum product. Other mappings remain application
+policy.
 
 Message header — 7 payload bytes per fragment:
 
@@ -489,9 +493,11 @@ Flags bit 0 = last fragment. All other bits are reserved and rejected
 (`HeaderError::Flags`). Ids are big-endian.
 
 `Fragmenter` borrows the caller's payload and yields `(header, chunk)`
-until the last fragment. Chunk size `0` is treated as 1. An empty
-payload still yields one empty last fragment so the receiver sees the
-message exist. A 4 GB blob and an 11-byte post use the same iterator.
+until the last fragment. `Defragmenter` writes those bytes back into a
+caller-owned buffer, one payload byte at a time (`push`). Chunk size
+`0` is treated as 1. An empty payload still yields one empty last
+fragment so the receiver sees the message exist. A 4 GB blob and an
+11-byte post use the same iterator.
 
 ### 11.6 PeerTable, PeerLink, Wire
 
@@ -500,7 +506,7 @@ message exist. A 4 GB blob and an 11-byte post use the same iterator.
 | Call | Meaning |
 |------|---------|
 | `PeerTable::new(id)` | Empty table. Offers `SessionConfig::DEFAULT` (version 1, window 8, `STREAM`). |
-| `PeerTable::with(id, cfg)` | Same, explicit config. `SessionConfig::offer(4, features)` fills version for you. |
+| `PeerTable::with(id, cfg)` | Same, explicit config. `SessionConfig::FORUM` or `SessionConfig::offer(4, features)`. |
 | `table.connect()` | Takes a free slot, returns the hello. |
 | `table.accept(hello)` | Installs an incoming hello. |
 | `table.find(id)` | Locates a neighbor. |
@@ -530,8 +536,8 @@ use psicose::prelude::*;
 let wire = Wire::new();
 let (pump_a, pump_b) = wire.pumps();
 
-let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
-let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
+let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
 
 let mut a = match PeerLink::connect(&mut alice, pump_a) {
     Ok(link) => link,
@@ -539,6 +545,32 @@ let mut a = match PeerLink::connect(&mut alice, pump_a) {
 };
 let mut b = PeerLink::accept(&bob, pump_b);
 let _ = (a.poll(&mut alice), b.poll(&mut bob));
+```
+
+The same pair moves bytes A→B. Not a forum. Runnable:
+`examples/forum.rs`. Test: `tests/forum.rs`.
+
+```rust
+use psicose::prelude::*;
+
+let cfg = SessionConfig::FORUM;
+let wire = Wire::new();
+let (pump_a, pump_b) = wire.pumps();
+
+let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
+let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);
+
+let mut a = match PeerLink::connect(&mut alice, pump_a) {
+    Ok(link) => link,
+    Err(_) => return,
+};
+let mut b = PeerLink::accept(&bob, pump_b);
+let _ = (a.poll(&mut alice), b.poll(&mut bob));
+
+let ping = b"ping";
+let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(1), ping, 4);
+let mut board = [0u8; 32];
+let mut inbox = Defragmenter::new(&mut board);
 ```
 
 A real UART driver does the same split: `Pump::on(tx, rx)`.

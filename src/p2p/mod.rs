@@ -43,7 +43,10 @@ pub use session::{
     Capabilities, HandshakeError, PeerSession, SessionConfig, SessionState, HELLO_LEN,
     PROTOCOL_VERSION,
 };
-pub use stream::{Fragmenter, HeaderError, MessageHeader, MessageId, StreamId, HEADER_LEN};
+pub use stream::{
+    DefragError, Defragmenter, Fragmenter, HeaderError, MessageHeader, MessageId, StreamId,
+    HEADER_LEN,
+};
 pub use table::{PeerEntry, PeerTable, TableError, MAX_PEERS};
 
 #[cfg(test)]

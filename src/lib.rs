@@ -71,8 +71,8 @@
 //! let wire = Wire::new();
 //! let (pump_a, pump_b) = wire.pumps();
 //!
-//! let mut alice = PeerTable::<4>::new(PeerId::from([0xAA; 8]));
-//! let mut bob = PeerTable::<4>::new(PeerId::from([0xBB; 8]));
+//! let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
+//! let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
 //!
 //! let mut a = match PeerLink::connect(&mut alice, pump_a) {
 //!     Ok(link) => link,
@@ -104,7 +104,7 @@
 //! [`StreamId`] / [`Fragmenter`]) as payload bytes only.
 //! File and UART/SPI stay out — you implement [`ByteSource`] on top of
 //! them. Runnable stand-ins live in `examples/` (`jpeg_over_uart`,
-//! `firmware_flash`, `sensor_telemetry`, `radio_windowed`). The formal
+//! `firmware_flash`, `sensor_telemetry`, `radio_windowed`, `forum`). The formal
 //! wire spec ships as `PROTOCOL.md` (English) and `PROTOCOL.pt-BR.md`
 //! in the crate.
 //!
@@ -134,10 +134,10 @@ pub mod window;
 pub use error::Error;
 #[doc(inline)]
 pub use p2p::{
-    Capabilities, DuplexFull, DuplexPort, DuplexWire, Fragmenter, HandshakeError, HeaderError,
-    LinkError, LinkEvent, MessageHeader, MessageId, PeerEntry, PeerId, PeerLink, PeerSession,
-    PeerTable, SessionConfig, SessionState, StreamId, TableError, Wire, HEADER_LEN, HELLO_LEN,
-    MAX_PEERS, PROTOCOL_VERSION,
+    Capabilities, DefragError, Defragmenter, DuplexFull, DuplexPort, DuplexWire, Fragmenter,
+    HandshakeError, HeaderError, LinkError, LinkEvent, MessageHeader, MessageId, PeerEntry, PeerId,
+    PeerLink, PeerSession, PeerTable, SessionConfig, SessionState, StreamId, TableError, Wire,
+    HEADER_LEN, HELLO_LEN, MAX_PEERS, PROTOCOL_VERSION,
 };
 #[doc(inline)]
 pub use protocol::{
