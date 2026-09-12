@@ -1,4 +1,4 @@
-# PSICOSE-1B — formal protocol (0.3.0)
+# PSICOSE-1B — formal protocol (0.3.1)
 
 [English](PROTOCOL.md) · [Português (Brasil)](PROTOCOL.pt-BR.md)
 
@@ -6,9 +6,10 @@ A `no_std`, heapless transport machine. This file is the specification.
 The code in `src/` is the implementation. If they diverge, the
 adversarial tests in `tests/hostile.rs` decide.
 
-**Status:** usable reliable byte transport plus an optional P2P layer on
-the same 4-byte frame. Feature `aead` adds ChaCha20-Poly1305 **above**
-the transport for real confidentiality and authenticity.
+**Status:** usable reliable byte transport plus a P2P layer on the same
+4-byte frame. Framework entry is `psicose::Node`. Feature `aead` adds
+ChaCha20-Poly1305 **above** the transport. Name-by-name API map:
+[API.md](API.md) (Português: [API.pt-BR.md](API.pt-BR.md)).
 
 ## Threat model
 
@@ -23,11 +24,11 @@ An adversary who can inject or modify bytes on the link can forge a
 CRC-valid frame. Treat CRC as noise protection only.
 
 ```
-                    APPLICATION
+                    APPLICATION / examples
                          │
               ┌──────────▼──────────┐
-              │     p2p (here)      │
-              │ PeerId / Session    │
+              │   psicose::Node     │
+              │ PeerLink / Session  │
               │ Stream / Message    │
               └──────────┬──────────┘
                          │ payload bytes
@@ -351,6 +352,17 @@ JPEG  File  Flash  Sensor  firmware.bin  [u8] of a struct
 
 `File` is an implementation. The core crate does not include it.
 
+### 8.1 Feature `embedded-io` (optional)
+
+Not part of the wire format. Adapters in `psicose::transport::embedded_io`:
+
+- `IoTransport` — `embedded_io::{Read, Write, ReadReady}` → `ByteTransport`
+  → `Pump::on` / `WindowedPump::on`
+- `IoSource` / `IoSink` — application `ByteSource` / `ByteSink`
+
+Pinned to **embedded-io 0.6** (MSRV 1.75). Without the feature, implement
+`ByteTransport` yourself (as the in-memory examples do).
+
 ## 9. Node memory (future PSICOSE-8)
 
 The transport protocol is already an 8-bit register machine (`SEQ`,
@@ -437,7 +449,7 @@ CRC is **not** a capability. The transport frame always carries it.
 
 | Bit | Name | Meaning |
 |-----|------|---------|
-| 0 | `WINDOW` | Selective-repeat (`N ≤ 8`) |
+| 0 | `WINDOW` | Selective-repeat (`N ≤ 8`). `PeerLink` raises its runtime DATA window to negotiated `max_window` after hello. |
 | 1 | `STREAM` | Logical streams over the session |
 | 2 | `FORUM` | Application messages (not a forum product) |
 | 3 | `COMPRESSION` | **Reserved.** Advertisement only; no compression in 0.3.x |
@@ -514,19 +526,33 @@ caller-owned buffer, one payload byte at a time (`push`). Chunk size
 fragment so the receiver sees the message exist. A 4 GB blob and an
 11-byte post use the same iterator.
 
-### 11.6 PeerTable, PeerLink, Wire
+### 11.6 Node, PeerTable, PeerLink, Wire
 
-`PeerTable<N>` is `[Option<PeerEntry>; N]` with `1 ≤ N ≤ 8`. No `Vec`.
+**Prefer [`Node`](https://docs.rs/psicose/latest/psicose/struct.Node.html)**
+as the framework entry. It owns a `PeerTable` and opens `PeerLink`s.
 
 | Call | Meaning |
 |------|---------|
-| `PeerTable::new(id)` | Empty table. Offers `SessionConfig::DEFAULT` (version 1, window 8, `STREAM`). |
-| `PeerTable::with(id, cfg)` | Same, explicit config. `SessionConfig::FORUM` or `SessionConfig::offer(4, features)`. |
+| `Node::<N>::new(id)` | Empty node. Offers `SessionConfig::DEFAULT`. |
+| `Node::with(id, cfg)` | Same, explicit config (`FORUM`, `SECURE`, …). |
+| `node.connect(pump)` | Allocates a slot + START + hello (outgoing). |
+| `node.accept(pump)` | Wait for hello, then reply (incoming). |
+| `establish(&mut a, &mut alice, &mut b, &mut bob)` | Busy-poll until both Established. |
+| `send_message(...)` | Fragment + send one body across the pair. |
+
+`PeerTable<N>` is `[Option<PeerEntry>; N]` with `1 ≤ N ≤ 8`. No `Vec`.
+Usually accessed via `node.table_mut()` for `PeerLink::poll`.
+
+| Call | Meaning |
+|------|---------|
+| `PeerTable::new(id)` | Empty table (low-level; prefer `Node`). |
+| `PeerTable::with(id, cfg)` | Same, explicit config. |
 | `table.connect()` | Takes a free slot, returns the hello. |
 | `table.accept(hello)` | Installs an incoming hello. |
 | `table.find(id)` | Locates a neighbor. |
 
-`PeerLink` is the live side: one `Pump` plus the hello state machine.
+`PeerLink` is the live side: one `WindowedPump` plus the hello state machine.
+Prefer `Node::{connect,accept}` over `PeerLink::connect/accept`.
 
 ```text
 connect:  START → hello(12) → wait hello → Established
@@ -543,52 +569,57 @@ readers on the same ring steal each other's bytes (the RX eats the
 ACK the TX is waiting for). `Wire` (`DuplexWire`) demuxes complete
 frames into a control lane (ACK/NACK → TX) and a payload lane
 (everything else, including a CRC miss → RX so it can NACK). The
-4-byte frame does not change.
+4-byte frame does not change. `Wire` is an **in-memory harness**, not
+the on-wire `Frame`.
 
 ```rust
 use psicose::prelude::*;
 
 let wire = Wire::new();
-let (pump_a, pump_b) = wire.pumps();
+let (pump_a, pump_b) = wire.link_pumps();
 
-let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
-let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
+let mut alice = Node::<4>::new(PeerId::from_label(b"alice"));
+let mut bob = Node::<4>::new(PeerId::from_label(b"bob"));
 
-let mut a = match PeerLink::connect(&mut alice, pump_a) {
+let mut a = match alice.connect(pump_a) {
     Ok(link) => link,
     Err(_) => return,
 };
-let mut b = PeerLink::accept(&bob, pump_b);
-let _ = (a.poll(&mut alice), b.poll(&mut bob));
+let mut b = bob.accept(pump_b);
+assert!(establish(&mut a, &mut alice, &mut b, &mut bob));
 ```
 
-The same pair moves bytes A→B. Not a forum. Runnable:
-`examples/forum.rs`. Test: `tests/forum.rs`.
+The same pair moves bytes A→B. Runnable transport example:
+`examples/ab_direct.rs` (`Wire::copy`). P2P hello + bytes:
+`examples/p2p_pair.rs`, `tests/forum.rs`.
 
 ```rust
 use psicose::prelude::*;
 
 let cfg = SessionConfig::FORUM;
 let wire = Wire::new();
-let (pump_a, pump_b) = wire.pumps();
+let (pump_a, pump_b) = wire.link_pumps();
 
-let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
-let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);
+let mut alice = Node::<4>::with(PeerId::from_label(b"alice"), cfg);
+let mut bob = Node::<4>::with(PeerId::from_label(b"bob"), cfg);
 
-let mut a = match PeerLink::connect(&mut alice, pump_a) {
+let mut a = match alice.connect(pump_a) {
     Ok(link) => link,
     Err(_) => return,
 };
-let mut b = PeerLink::accept(&bob, pump_b);
-let _ = (a.poll(&mut alice), b.poll(&mut bob));
+let mut b = bob.accept(pump_b);
+assert!(establish(&mut a, &mut alice, &mut b, &mut bob));
 
 let ping = b"ping";
-let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(1), ping, 4);
 let mut board = [0u8; 32];
 let mut inbox = Defragmenter::new(&mut board);
+assert!(send_message(&mut a, &mut alice, &mut b, &mut bob, 1, ping, &mut inbox));
 ```
 
-A real UART driver does the same split: `Pump::on(tx, rx)`.
+A real UART driver does the same split: `Pump::on(tx, rx)` or
+`Node` + `Wire::link_pumps` replaced by your `ByteTransport`.
+
+Full crate surface: [API.md](API.md).
 
 ### 11.7 Not yet (applications of this layer)
 

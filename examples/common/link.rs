@@ -2,6 +2,15 @@
 //!
 //! Each example is a single thread. The "wire" is two heapless rings.
 //! Swap `End` for a real UART driver in the field — the rest stays.
+//!
+//! On hardware that already speaks `embedded-io` 0.6, enable feature
+//! `embedded-io` and replace `End` with:
+//!
+//! ```ignore
+//! use psicose::{IoTransport, Pump};
+//! let mut pump = Pump::on(IoTransport::new(uart_tx), IoTransport::new(uart_rx));
+//! ```
+//!
 //! Shared harness for sibling examples (`#[path = "common/link.rs"]`).
 //! Not a runnable demo — each example uses only a subset of these helpers.
 #![allow(dead_code)]
@@ -248,7 +257,7 @@ pub fn pair(wires: &RefCell<Wires>) -> (End<'_>, End<'_>) {
     (End { wires, is_a: true }, End { wires, is_a: false })
 }
 
-/// In-memory A↔B [`PeerLink`] over [`psicose::Wire`].
+/// In-memory A↔B [`PeerLink`] over [`psicose::Wire`] (framework P2P layer).
 pub type Peer<'w> = PeerLink<DuplexPort<'w>, DuplexPort<'w>>;
 
 /// Drive both links until hellos cross (or fail).

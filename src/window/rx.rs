@@ -30,6 +30,8 @@ pub struct WindowedReceiver<T: ByteTransport, const N: usize> {
     emit: [u8; N],
     emit_at: usize,
     emit_len: usize,
+    /// Runtime accept window (`1..=N`), mirrored from the negotiated hello.
+    limit: usize,
     state: RxState,
     assembler: FrameAssembler,
     out: OutBuf,
@@ -49,6 +51,7 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
             emit: [0; N],
             emit_at: 0,
             emit_len: 0,
+            limit: N,
             state: RxState::Idle,
             assembler: FrameAssembler::new(),
             out: OutBuf::empty(),
@@ -73,6 +76,26 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
         N
     }
 
+    /// Runtime accept window (`1..=N`).
+    pub fn window_limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Clamp reorder/accept window to `limit` (`1..=N`). Prefer an empty
+    /// buffer (after START / before DATA).
+    pub fn set_window_limit(&mut self, limit: usize) {
+        if self.buf.iter().any(|s| s.is_some()) || self.emit_len != 0 || !self.out.is_idle() {
+            return;
+        }
+        self.limit = if limit == 0 {
+            1
+        } else if limit > N {
+            N
+        } else {
+            limit
+        };
+    }
+
     fn settle_idle(&mut self) {
         self.state = if self.abort_latched {
             RxState::Aborted
@@ -95,7 +118,7 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
 
     fn offset(&self, seq: u8) -> Option<usize> {
         let delta = seq.wrapping_sub(self.expected_seq.current());
-        if (delta as usize) < N {
+        if (delta as usize) < self.limit {
             Some(delta as usize)
         } else {
             None
@@ -104,7 +127,7 @@ impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
 
     fn is_duplicate(&self, seq: u8) -> bool {
         let back = self.expected_seq.current().wrapping_sub(seq);
-        back >= 1 && (back as usize) <= N
+        back >= 1 && (back as usize) <= self.limit
     }
 
     fn shift_buf(&mut self) {

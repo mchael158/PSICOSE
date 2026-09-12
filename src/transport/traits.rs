@@ -13,6 +13,14 @@
 /// [`crate::rx::Receiver`] implement their own timeout/retry logic on top,
 /// independent of whatever clock or scheduler the host system uses.
 ///
+/// # How to get an implementation
+///
+/// - **Tests / examples:** in-memory rings (`Wire`, `examples/common/link.rs`).
+/// - **Hardware with `embedded-io` 0.6:** enable feature `embedded-io` and
+///   wrap the port with [`crate::IoTransport`] — then pass it to
+///   [`crate::Pump::on`].
+/// - **Anything else:** implement this trait on your UART/SPI/radio type.
+///
 /// [`read_byte`]: ByteTransport::read_byte
 pub trait ByteTransport {
     /// The error type produced by the underlying hardware/IO layer.

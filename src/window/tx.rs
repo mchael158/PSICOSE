@@ -4,7 +4,7 @@ use crate::error::Error;
 use crate::protocol::{Frame, FrameAssembler, FrameType, OutBuf, Sequence};
 use crate::timeout::RetryPolicy;
 use crate::transport::ByteTransport;
-use crate::tx::{TxPoll, TxState};
+use crate::tx::{IoMark, TxPoll, TxState};
 
 use super::check_window;
 
@@ -35,11 +35,15 @@ pub struct WindowedSender<T: ByteTransport, const N: usize> {
     transport: T,
     next_seq: Sequence,
     slots: [Option<TxSlot>; N],
+    /// Runtime in-flight ceiling (`1..=N`). Handshake uses 1; P2P raises
+    /// it after a negotiated [`Capabilities::WINDOW`](crate::Capabilities).
+    limit: usize,
     state: TxState,
     retry_policy: RetryPolicy,
     assembler: FrameAssembler,
     out: OutBuf,
     writing: Option<usize>,
+    mark: IoMark,
 }
 
 impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
@@ -55,11 +59,13 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             transport,
             next_seq: Sequence::new(),
             slots: [None; N],
+            limit: N,
             state: TxState::Idle,
             retry_policy,
             assembler: FrameAssembler::new(),
             out: OutBuf::empty(),
             writing: None,
+            mark: IoMark::default(),
         }
     }
 
@@ -89,6 +95,41 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         N
     }
 
+    /// Runtime in-flight ceiling (`1..=N`).
+    pub fn window_limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Clamp DATA pipelining to `limit` slots (`1..=N`). No-op if the
+    /// window is busy (call after START/hello drain, before DATA).
+    pub fn set_window_limit(&mut self, limit: usize) {
+        if self.outstanding() != 0 || !self.out.is_idle() {
+            return;
+        }
+        self.limit = if limit == 0 {
+            1
+        } else if limit > N {
+            N
+        } else {
+            limit
+        };
+    }
+
+    pub(crate) fn holds_session_control(&self) -> bool {
+        for slot in self.slots.iter().flatten() {
+            if matches!(slot.kind, FlightKind::Abort | FlightKind::Start) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn take_mark(&mut self) -> IoMark {
+        let mark = self.mark;
+        self.mark = IoMark::default();
+        mark
+    }
+
     fn find_seq(&self, seq: u8) -> Option<usize> {
         for (i, slot) in self.slots.iter().enumerate() {
             if slot.as_ref().map(|s| s.seq) == Some(seq) {
@@ -108,7 +149,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             oldest = Some(match oldest {
                 None => slot.seq,
                 Some(base) => {
-                    if slot.seq.wrapping_sub(base) as usize <= N {
+                    if slot.seq.wrapping_sub(base) as usize <= self.limit {
                         base
                     } else {
                         slot.seq
@@ -122,7 +163,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
     fn seq_in_send_window(&self, seq: u8) -> bool {
         match self.oldest_unacked() {
             None => true,
-            Some(base) => (seq.wrapping_sub(base) as usize) < N,
+            Some(base) => (seq.wrapping_sub(base) as usize) < self.limit,
         }
     }
 
@@ -295,6 +336,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         } else {
             TxState::WaitingAck
         };
+        self.mark.frame_on_wire = true;
     }
 
     /// One non-blocking step: write at most one byte, or read at most one.
@@ -410,6 +452,8 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         slot.needs_retransmit = true;
         slot.empty_ticks = 0;
         self.state = TxState::Retrying;
+        self.mark.nack = true;
+        self.mark.retransmit = true;
         Ok(TxPoll::Pending)
     }
 
@@ -436,6 +480,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
             slot.needs_retransmit = true;
             slot.empty_ticks = 0;
             self.state = TxState::Retrying;
+            self.mark.retransmit = true;
         }
         Ok(TxPoll::Pending)
     }

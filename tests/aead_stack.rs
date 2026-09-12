@@ -18,7 +18,7 @@ fn sealed_bytes_survive_the_link() {
 
     let cfg = SessionConfig::SECURE;
     let wire = Wire::new();
-    let (pump_a, pump_b) = wire.pumps();
+    let (pump_a, pump_b) = wire.link_pumps();
 
     let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
     let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);

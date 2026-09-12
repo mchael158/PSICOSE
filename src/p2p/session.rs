@@ -34,9 +34,11 @@ pub const HELLO_LEN: usize = PeerId::LEN + SessionConfig::WIRE_LEN;
 /// CRC is deliberately **not** a capability: the transport frame always
 /// carries it. Only optional behavior is negotiated.
 ///
-/// Bits are **announcements**. They do not switch `PeerLink` internals:
-/// - [`Self::WINDOW`] / [`Self::FRAGMENTATION`]: the app chooses
-///   [`WindowedSender`](crate::WindowedSender) / [`Fragmenter`](crate::Fragmenter).
+/// Bits are **announcements**, except where a layer honours them:
+/// - [`Self::WINDOW`]: [`PeerLink`](crate::PeerLink) raises its runtime
+///   DATA window to the negotiated `max_window` after hello (still
+///   `N ≤ 8`). Outside P2P, the app may also use [`WindowedSender`](crate::WindowedSender).
+/// - [`Self::FRAGMENTATION`]: the app chooses [`Fragmenter`](crate::Fragmenter).
 /// - [`Self::COMPRESSION`]: reserved (no implementation).
 /// - [`Self::ENCRYPTION`]: with feature `aead`, means peers may use
 ///   [`crate::aead`] on application payloads before the transport.
@@ -48,7 +50,8 @@ pub struct Capabilities {
 impl Capabilities {
     /// No optional features.
     pub const NONE: Capabilities = Capabilities { bits: 0 };
-    /// Peer may use selective-repeat (`N ≤ 8`) on its own send path.
+    /// Peer may use selective-repeat (`N ≤ 8`). Honoured by [`crate::PeerLink`]
+    /// after hello (runtime window limit = negotiated `max_window`).
     pub const WINDOW: Capabilities = Capabilities { bits: 1 << 0 };
     /// Byte streams over the session.
     pub const STREAM: Capabilities = Capabilities { bits: 1 << 1 };

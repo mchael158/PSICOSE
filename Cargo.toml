@@ -1,10 +1,10 @@
 [package]
 name = "psicose"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
-description = "no_std, heapless reliable byte transport: 1-byte payload, 4-byte frame, stop-and-wait and windowed (N ≤ 8)."
+description = "no_std heapless framework: 4-byte frame, ACK/CRC, window N≤8, P2P Node/PeerLink; optional AEAD and embedded-io"
 readme = "README.md"
 documentation = "https://docs.rs/psicose"
 homepage = "https://github.com/mchael158/PSICOSE"
@@ -19,6 +19,8 @@ include = [
     "LICENSE-APACHE",
     "README.md",
     "README.pt-BR.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
     "docs/**",
     "CHANGELOG.md",
     "examples/**",
@@ -55,8 +57,12 @@ name = "radio_windowed"
 path = "examples/radio_windowed.rs"
 
 [[example]]
-name = "forum"
-path = "examples/forum.rs"
+name = "ab_direct"
+path = "examples/ab_direct.rs"
+
+[[example]]
+name = "p2p_pair"
+path = "examples/p2p_pair.rs"
 
 [[test]]
 name = "aead_stack"
@@ -67,9 +73,12 @@ required-features = ["aead"]
 default = []
 # ChaCha20-Poly1305 (RFC 8439) above the transport. Core stays zero-deps.
 aead = ["dep:chacha20poly1305", "dep:zeroize"]
+# Adapters from embedded-io 0.6 (MSRV 1.75). 0.7 needs rustc 1.81+.
+embedded-io = ["dep:embedded-io"]
 
 [dependencies]
 # Core: intentionally empty of required deps.
 chacha20poly1305 = { version = "0.10.1", optional = true, default-features = false }
 # MSRV 1.75: zeroize 1.9+ needs edition2024 / newer Cargo.
 zeroize = { version = ">=1.5, <1.9", optional = true, default-features = false }
+embedded-io = { version = "0.6.1", optional = true, default-features = false }

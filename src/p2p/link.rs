@@ -1,18 +1,21 @@
-//! One live neighbor: a [`Pump`] plus the hello state machine.
+//! One live neighbor: a [`WindowedPump`] plus the hello state machine.
 //!
 //! ```text
 //! connect:  START → hello(12) → wait hello → Established
 //! accept:   wait hello → START → hello(12) → Established
 //! ```
 //!
-//! Both sides use the real transport. [`PeerLink::poll`] never loops.
+//! Handshake DATA uses window limit 1 (stop-and-wait). After negotiate,
+//! if [`Capabilities::WINDOW`] is set, the runtime limit becomes the
+//! agreed `max_window` so DATA can pipeline. [`PeerLink::poll`] never loops.
 
 use crate::error::Error;
-use crate::pump::{Pump, PumpEvent};
+use crate::pump::{PumpEvent, WindowedPump};
 use crate::transport::ByteTransport;
 use crate::tx::TxState;
+use crate::window::MAX_WINDOW;
 
-use super::session::{HandshakeError, PeerSession, SessionState, HELLO_LEN};
+use super::session::{Capabilities, HandshakeError, PeerSession, SessionState, HELLO_LEN};
 use super::table::{PeerTable, TableError};
 
 /// Outcome of one [`PeerLink::poll`].
@@ -53,13 +56,17 @@ impl<E: core::fmt::Debug> core::fmt::Display for LinkError<E> {
     }
 }
 
-/// Connector or listener over one `Pump`.
+/// Connector or listener over one [`WindowedPump`] (`N = MAX_WINDOW`).
+///
+/// Prefer opening links through [`crate::Node::connect`] /
+/// [`crate::Node::accept`]. These constructors are the low-level path
+/// when you already hold a [`PeerTable`] yourself.
 pub struct PeerLink<Tx, Rx>
 where
     Tx: ByteTransport,
     Rx: ByteTransport<Error = Tx::Error>,
 {
-    pump: Pump<Tx, Rx>,
+    pump: WindowedPump<Tx, Rx, MAX_WINDOW>,
     session: PeerSession,
     slot: Option<usize>,
     outgoing: [u8; HELLO_LEN],
@@ -79,10 +86,13 @@ where
     Rx: ByteTransport<Error = Tx::Error>,
 {
     /// Allocates a table slot and starts an outgoing connect (START + hello).
+    ///
+    /// Prefer [`crate::Node::connect`] unless you manage the table yourself.
     pub fn connect<const N: usize>(
         table: &mut PeerTable<N>,
-        pump: Pump<Tx, Rx>,
+        mut pump: WindowedPump<Tx, Rx, MAX_WINDOW>,
     ) -> Result<Self, TableError> {
+        pump.set_window_limit(1);
         let (slot, hello) = table.connect()?;
         let session = match table.get(slot) {
             Some(entry) => *entry.session(),
@@ -105,7 +115,13 @@ where
     }
 
     /// Listens on `pump`. The table slot is taken when the hello arrives.
-    pub fn accept<const N: usize>(table: &PeerTable<N>, pump: Pump<Tx, Rx>) -> Self {
+    ///
+    /// Prefer [`crate::Node::accept`] unless you manage the table yourself.
+    pub fn accept<const N: usize>(
+        table: &PeerTable<N>,
+        mut pump: WindowedPump<Tx, Rx, MAX_WINDOW>,
+    ) -> Self {
+        pump.set_window_limit(1);
         PeerLink {
             pump,
             session: PeerSession::new(table.local(), table.config()),
@@ -132,17 +148,20 @@ where
         self.slot
     }
 
-    /// The pump.
-    pub fn pump(&self) -> &Pump<Tx, Rx> {
+    /// The windowed pump.
+    pub fn pump(&self) -> &WindowedPump<Tx, Rx, MAX_WINDOW> {
         &self.pump
     }
 
-    /// The pump, mutably (offer DATA after [`LinkEvent::Established`]).
-    pub fn pump_mut(&mut self) -> &mut Pump<Tx, Rx> {
+    /// The windowed pump, mutably (offer DATA after [`LinkEvent::Established`]).
+    pub fn pump_mut(&mut self) -> &mut WindowedPump<Tx, Rx, MAX_WINDOW> {
         &mut self.pump
     }
 
     /// Offer one payload byte. Same as `self.pump_mut().sender_mut().offer(byte)`.
+    ///
+    /// After a negotiated `WINDOW`, several offers may succeed before the
+    /// first ACK (up to the runtime window limit).
     pub fn offer(&mut self, byte: u8) -> Result<(), Error<Tx::Error>> {
         self.pump.sender_mut().offer(byte)
     }
@@ -170,8 +189,22 @@ where
         }
     }
 
+    /// Raise DATA pipelining to the negotiated window when `WINDOW` is set.
+    fn apply_negotiated_window(&mut self) {
+        let Some(cfg) = self.session.negotiated() else {
+            return;
+        };
+        let limit = if cfg.features.contains(Capabilities::WINDOW) {
+            cfg.max_window as usize
+        } else {
+            1
+        };
+        self.pump.set_window_limit(limit);
+    }
+
     fn offer_next(&mut self) -> Result<(), Error<Tx::Error>> {
-        if self.pump.sender().state() != TxState::Idle {
+        // Hello bytes stay stop-and-wait even on a windowed pump.
+        if self.pump.sender().outstanding() != 0 || self.pump.sender().state() != TxState::Idle {
             return Ok(());
         }
         if self.need_start {
@@ -222,6 +255,9 @@ where
         }
 
         self.established = self.session.state() == SessionState::Established;
+        if self.established {
+            self.apply_negotiated_window();
+        }
         self.sync(table);
         if self.established && self.initiator && !self.announced {
             self.announced = true;
@@ -268,6 +304,7 @@ where
                     && self.out_at >= self.out_len
                     && !self.need_start
                     && self.pump.sender().state() == TxState::Idle
+                    && self.pump.sender().outstanding() == 0
                 {
                     self.announced = true;
                     Ok(LinkEvent::Established)

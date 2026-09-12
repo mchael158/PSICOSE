@@ -1,21 +1,12 @@
-//! Field node sends a packed weather sample over a slow radio.
-//!
-//! The node has a DHT22 + ADC battery sense. RAM is tens of bytes. The
-//! sample is a packed struct, not a JSON string. PSICOSE does not know
-//! about fields — it only ships the 8 bytes. The gateway rebuilds the
-//! struct and prints engineering units.
+//! Field node sends a packed weather sample through the **PSICOSE motor**.
 //!
 //! ```text
-//! DHT22 / ADC  -->  [u8; 8]  -->  PSICOSE  -->  gateway
-//!                   packed
+//! DHT22 / ADC  -->  [u8; 8]  -->  Wire::copy  -->  gateway
 //! ```
 //!
 //! Run: `cargo run --example sensor_telemetry`
 
-#[path = "common/link.rs"]
-mod link;
-
-use psicose::{SliceSink, SliceSource};
+use psicose::{SliceSink, SliceSource, Wire};
 
 /// On-wire layout (little-endian), 8 bytes:
 /// `magic | temp_c_x10_le | humidity | battery_mv_le | flags | xor`
@@ -61,7 +52,7 @@ fn main() {
     let mut radio_rx = [0u8; 8];
     let mut sink = SliceSink::new(&mut radio_rx);
 
-    match link::copy_stop_and_wait(&mut src, &mut sink) {
+    match Wire::new().copy(&mut src, &mut sink) {
         Ok(n) => {
             assert_eq!(n, 8);
             assert_eq!(sink.written(), &sample[..]);
@@ -80,7 +71,7 @@ fn main() {
             }
         }
         Err(e) => {
-            eprintln!("sensor_telemetry failed: {e:?}");
+            eprintln!("sensor_telemetry failed: {e}");
             std::process::exit(1);
         }
     }

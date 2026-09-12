@@ -1,88 +1,119 @@
 # PSICOSE-1B
 
 [![crates.io](https://img.shields.io/crates/v/psicose.svg)](https://crates.io/crates/psicose)
-[![docs.rs](https://docs.rs/psicose/badge.svg)](https://docs.rs/psicose)
+[![docs.rs](https://docs.rs/psicose/badge.svg)](https://docs.rs/psicose/latest/psicose/)
 [![CI](https://github.com/mchael158/PSICOSE/actions/workflows/ci.yml/badge.svg)](https://github.com/mchael158/PSICOSE/actions/workflows/ci.yml)
+[![no_std](https://img.shields.io/badge/no__std-yes-brightgreen.svg)](https://docs.rs/psicose)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/mchael158/PSICOSE)
 [![license](https://img.shields.io/crates/l/psicose.svg)](https://crates.io/crates/psicose)
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md)
 
-Protocolo de transporte `no_std`, sem heap, determinístico e orientado a
-byte. **O payload é 1 byte. O frame no fio é 4 bytes.** Não é a mesma
-coisa.
+**Framework `no_std` para links confiáveis** — fio + pump + janela + **P2P**,
+RAM constante na stack, zero deps no build padrão.
+
+Payload = **1 byte**. Frame = **4 bytes**. P2P (`Node`, `PeerLink`, hello,
+fragmentação) está **nesta crate**, no mesmo frame — não é um pacote à parte.
+Os exemplos chamam este motor; não inventam P2P externo nem passam conexão.
 
 ```text
 ┌──────┬─────┬─────┬───────┐
-│ TYPE │ SEQ │ DATA│  CRC  │   ← frame = 4 bytes (overhead + payload)
+│ TYPE │ SEQ │ DATA│  CRC  │   ← frame = 4 bytes
 └──────┴─────┴─────┴───────┘
                    ▲
                    └── payload da aplicação: exatamente 8 bits
 ```
 
-Eficiência máxima antes dos ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK):
-1/8 = 12,5%.
+Eficiência máxima antes dos ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK): 1/8 = 12,5%.
 
 ```toml
 [dependencies]
 psicose = "0.3"
 # Criptografia autenticada opcional acima do transporte:
 # psicose = { version = "0.3", features = ["aead"] }
+# UART/SPI via embedded-io 0.6:
+# psicose = { version = "0.3", features = ["embedded-io"] }
 ```
 
-Build padrão: **sem features, sem dependências.** Feature opcional `aead`
-adiciona ChaCha20-Poly1305 (RFC 8439). MSRV: Rust 1.75 (`rust-toolchain.toml`).
+| | |
+| --- | --- |
+| Build padrão | **framework core (incl. P2P), zero dependências** |
+| Opcional | `aead`, `embedded-io` (0.6 — MSRV 1.75) |
+| MSRV | Rust 1.75 |
+| Segurança | `#![no_std]` · `#![forbid(unsafe_code)]` · sem heap |
+| Docs | [docs.rs/psicose](https://docs.rs/psicose/latest/psicose/) |
+| Spec | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) · [pt-BR](docs/PROTOCOL.pt-BR.md) |
+| Mapa da API | [`docs/API.md`](docs/API.md) · [pt-BR](docs/API.pt-BR.md) |
 
-Docs: [docs.rs/psicose](https://docs.rs/psicose) · spec:
-[`docs/PROTOCOL.md`](docs/PROTOCOL.md) ([pt-BR](docs/PROTOCOL.pt-BR.md))
+## Experimente em 30 segundos
 
-## Por quê
+```sh
+cargo run --example ab_direct    # motor: Wire::copy
+cargo run --example p2p_pair     # motor: Node + PeerLink
+cargo run --example jpeg_over_uart
+cargo test
+```
 
-A maioria dos protocolos segura a mensagem inteira na memória. A PSICOSE
-não: move um byte de payload por vez. A memória é alguns frames na
-stack — 4 bytes de config ou um arquivo de 4 GB.
+## Quando usar
 
-## Estado (0.3 — transporte utilizável)
+- UART / SPI / rádio com pouca RAM — sem bufferar a mensagem inteira
+- Flash de firmware, JPEG de câmera, telemetria, dump de EEPROM
+- Stop-and-wait ou selective-repeat (`N ≤ 8`) com CRC + retry na stack
+- ChaCha20-Poly1305 opcional (`aead`) se o link puder ser adversarial
 
-Transporte de byte confiável para links embutidos. CRC-8 é **detecção de
-ruído**, não autenticação — use `aead` se o link puder ser adversarial.
+## Quando não usar
 
-- **protocol** — CRC-8, frame de 4 bytes, validação semântica, wraparound
-  de `SEQ`, assembler, `OutBuf`.
-- **tx / rx** — stop-and-wait. `START` / `FINISH` / `ABORT` esperam ACK.
-- **pump** — `Pump` cooperativa (`rx.poll` depois `tx.poll`, sem loop
-  interno) + `SessionStats` (`bytes_delivered`, `frames_sent`,
-  `retries`, `nacks`, `duplicates`, `crc_errors`, `ticks`).
-- **window** — selective-repeat `N ≤ 8`. Aliases: `W8Sender`, `W8Receiver`.
-- **transport** — `ByteTransport` / `ByteSource` / `ByteSink`.
-- **stream** — qualquer byte pelo envelope: `SliceSource` / `SliceSink`,
-  `send_all` / `recv_all` (stop-and-wait e janelado). JPEG, arquivo,
-  flash, sensor ou bytes de um `struct` são só um `ByteSource`. O frame
-  não é o tipo da aplicação.
-- **fault** — `FaultyTransport`.
-- **actors** — `System` cooperativo.
-- **p2p** — mesma crate, mesmo orçamento. `use psicose::prelude::*`. Veja abaixo.
+- Precisa de alto throughput / frames grandes (por desenho: 1 DATA byte/frame)
+- Precisa de roteamento, mesh ou gossip (fora desta crate)
+- Só precisa do driver UART — implemente `ByteTransport`; a PSICOSE fica acima
 
-Ainda não: roteamento / gossip / store-and-forward, UART/SPI/CAN/rádio,
-`File`.
+## Por que existe
 
-## Camadas
+A maioria dos stacks segura a mensagem inteira na memória. A PSICOSE não:
+a memória é alguns frames na stack, sejam 4 bytes de config ou um arquivo
+enorme. Confiabilidade (ACK, NACK, SEQ, CRC-8, retry) é do protocolo.
+
+CRC-8 é **detecção de ruído**, não autenticação. Com feature `aead`, use
+`seal_to` / `open_from` se houver atacante no fio. Veja [`SECURITY.md`](SECURITY.md).
+
+## Estado (0.3 — utilizável)
+
+- **protocol** — CRC-8, frame 4 bytes, wraparound de `SEQ`, assembler
+- **tx / rx** — stop-and-wait; `START` / `FINISH` / `ABORT` esperam ACK
+- **pump** — `Pump` cooperativa + `SessionStats` (sem loop interno)
+- **window** — selective-repeat `1 ≤ N ≤ 8`
+- **stream** — `SliceSource` / `SliceSink`, `send_all` / `recv_all`
+- **p2p** — `Node`, `PeerLink`, hello, fragmentação (`prelude`)
+- **aead** (opcional) — ChaCha20-Poly1305 acima do transporte
+- **embedded-io** (opcional) — `IoTransport` / `IoSource` / `IoSink` a
+  partir de `embedded-io` 0.6
+
+Fora da crate: drivers UART/SPI concretos, `File`, roteamento / gossip.
+
+## Camadas (um framework)
 
 ```text
- bytes da aplicação
+ exemplos / aplicação
         │
-        ├─ opcional: aead::seal_to / open_from   (feature = "aead")
-        ├─ opcional: Fragmenter / Defragmenter
         ▼
- PeerLink / Pump / Sender|Receiver|Windowed*
+ psicose::Node                              ← entrada do motor
+        ├─ PeerLink / PeerTable / hello
+        ├─ Fragmenter / Defragmenter
+        ├─ opcional aead::seal_to / open_from
+        ▼
+ Wire::copy / Pump / WindowedPump
         │  DATA 1 byte/frame + CRC-8 + ACK
         ▼
- ByteTransport  (você implementa: UART / SPI / rádio)
+ ByteTransport
+        ├─ você implementa (UART / SPI / rádio)
+        └─ ou IoTransport::new(port)            (feature = "embedded-io")
 ```
 
-Você empilha as camadas. Bits de `Capabilities` anunciam intenção; não
-ligam sozinhos janela ou AEAD no `PeerLink`.
+Só transporte (`Wire::copy` / `Pump`) ou sobe para P2P (`Node`) — mesma
+crate, mesmo frame. `Capabilities::WINDOW` é honrado pelo `PeerLink`
+após o hello.
 
-## API
+## API (resumo)
 
 ```rust
 use psicose::prelude::*;
@@ -90,143 +121,72 @@ use psicose::prelude::*;
 
 | Você escreve | Significado |
 | --- | --- |
-| `PeerId::from_label(b"alice")` | Identidade de 8 bytes (com padding). Nunca no frame de 4 bytes. |
-| `PeerTable::<4>::new(id)` | Vizinhos, `1 ≤ N ≤ 8`. Default: janela 8 + `STREAM`. |
-| `PeerTable::with(id, SessionConfig::FORUM)` | Hello: `STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION`. |
-| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (anuncia AEAD; ainda chama `seal_to`). |
-| `StreamId::FORUM` / `MessageId::new(1)` | Conversa da aplicação. Não é `SEQ`. |
-| `Fragmenter` / `Defragmenter` | Corta qualquer blob; remonta num buffer na stack. |
-| `seal_to` / `open_from` | Feature `aead`: ciphertext ‖ tag acima do transporte. |
-| `SessionConfig::offer(4, features)` | Config do hello. A versão é `PROTOCOL_VERSION`. |
-| `Capabilities::*` | Só anúncios. CRC não se negocia. |
-| `Wire::new().pumps()` | A↔B na memória. ACK/NACK → TX, DATA/START/FINISH/ABORT → RX. |
-| `Pump::on(tx, rx)` | O mesmo envelopamento num UART / SPI / rádio. |
-| `PeerLink::connect` / `accept` | START + hello de 12 bytes nos dois sentidos. |
-| `link.offer(byte)` | DATA depois de `Established`. |
-| `link.poll(&mut table)` | Um passo cooperativo. Nunca entra em loop. |
-| `PollOutcome::is_closed()` | FINISH ou ABORT encerrou a transferência. |
-
-O hello no fio tem 12 bytes de payload: `PeerId (8) | ver (1) | janela (1) | features (2)`.
-`PeerSession` é só contabilidade (≤ 128 B). `StreamId` / `MessageId` não
-são `SEQ`.
+| `PeerId::from_label(b"alice")` | Identidade 8 bytes. Nunca no frame de 4. |
+| `Node::<4>::new(id)` | Entrada do framework: identidade + tabela. |
+| `Node::with(id, SessionConfig::FORUM)` | Hello com bits de app. |
+| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (ainda chama `seal_to`). |
+| `Fragmenter` / `Defragmenter` | Corta / remonta blob na stack. |
+| `seal_to` / `open_from` | Feature `aead`. |
+| `Wire::new().copy(src, sink)` | Motor stop-and-wait A→B. |
+| `Wire::new().link_pumps()` | A↔B em memória para `PeerLink` (janelado). |
+| `Pump::on(tx, rx)` | Mesmo envelopamento no hardware. |
+| `IoTransport::new(port)` | Feature `embedded-io`. |
+| `node.connect` / `node.accept` | START + hello 12 bytes. |
+| `establish` / `send_message` | Helpers cooperativos **dentro** da crate. |
 
 ```rust
 use psicose::prelude::*;
 
 let wire = Wire::new();
-let (pump_a, pump_b) = wire.pumps();
+let (pump_a, pump_b) = wire.link_pumps();
 
-let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
-let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
+let mut alice = Node::<4>::new(PeerId::from_label(b"alice"));
+let mut bob = Node::<4>::new(PeerId::from_label(b"bob"));
 
-let mut a = match PeerLink::connect(&mut alice, pump_a) {
+let mut a = match alice.connect(pump_a) {
     Ok(link) => link,
     Err(_) => return,
 };
-let mut b = PeerLink::accept(&bob, pump_b);
-let _ = (a.poll(&mut alice), b.poll(&mut bob));
+let mut b = bob.accept(pump_b);
+assert!(establish(&mut a, &mut alice, &mut b, &mut bob));
 ```
 
-O mesmo link move bytes A→B. Isso não é um fórum — só payload:
-
-```rust
-use psicose::prelude::*;
-
-let cfg = SessionConfig::FORUM;
-let wire = Wire::new();
-let (pump_a, pump_b) = wire.pumps();
-
-let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
-let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);
-
-let mut a = match PeerLink::connect(&mut alice, pump_a) {
-    Ok(link) => link,
-    Err(_) => return,
-};
-let mut b = PeerLink::accept(&bob, pump_b);
-let _ = (a.poll(&mut alice), b.poll(&mut bob));
-
-let ping = b"ping";
-let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(1), ping, 4);
-let mut board = [0u8; 32];
-let mut inbox = Defragmenter::new(&mut board);
-```
-
-Executável: `cargo run --example forum`. Teste: `tests/forum.rs`.
-
-Para outro perfil:
-`PeerTable::with(id, SessionConfig::offer(4, Capabilities::STREAM | Capabilities::WINDOW))`.
-
-O envelope de 4 bytes continua só isto:
-
-```rust
-use psicose::Frame;
-
-let frame = Frame::data(0, b'A');
-assert_eq!(Frame::from_bytes(frame.to_bytes()), Ok(frame));
-```
-
-## Inegociáveis
-
-- `#![no_std]`, `#![forbid(unsafe_code)]`
-- Sem `Vec`, `String`, `Box`, `Rc`/`Arc`, sem alocador, sem runtime async
-- Todo tipo público tem tamanho conhecido em compile time
-- Confiabilidade é trabalho do protocolo, nunca da aplicação
-
-## Qualquer dado, não só frame
-
-O frame de 4 bytes é o **envelope**. O dado da aplicação é sempre byte:
-
-```text
-JPEG  Arquivo  Flash  Sensor  firmware.bin  o seu struct
-  └────────┴───────┴────────┴──────────────┘
-                    │
-               ByteSource     ← você implementa
-                    │ 1 byte por vez
-                    ▼
-                 PSICOSE      ← nunca possui o blob
-                    │
-                ByteSink
-```
-
-`psicose::File` não está nesta crate. Um JPEG e um arquivo de 4 GB
-usam o mesmo caminho: implemente `ByteSource` / `ByteSink` (ou use
-`SliceSource` / `SliceSink` quando o buffer já é seu).
+Rodar: `cargo run --example p2p_pair`. Só transporte: `ab_direct`.
+Testes: `tests/forum.rs`.
 
 ## Exemplos
-
-Problemas reais, executáveis. O "UART" e o "rádio" são anéis na
-memória; no campo você troca o `End` pelo driver.
 
 ```sh
 cargo run --example jpeg_over_uart
 cargo run --example firmware_flash
 cargo run --example sensor_telemetry
 cargo run --example radio_windowed
-cargo run --example forum
+cargo run --example ab_direct
+cargo run --example p2p_pair
 ```
 
-| Exemplo | Problema | O que a PSICOSE vê |
+| Example | Camada | O que a PSICOSE vê |
 | --- | --- | --- |
-| `jpeg_over_uart` | RAM de câmera OV2640 → arquivo no host, via UART | bytes JPEG |
-| `firmware_flash` | `firmware.bin` no host → flash NOR do MCU, 1 byte programado por vez | bytes do arquivo |
-| `sensor_telemetry` | DHT22 + ADC de bateria, struct empacotado no rádio lento | amostra de 8 bytes |
-| `radio_windowed` | dump de 300 bytes de EEPROM; o primeiro DATA some | bytes, janela `N=8` |
-| `forum` | Alice ↔ Bob: handshake, depois bytes nos dois sentidos | bytes de payload |
+| `ab_direct` | transporte (`Pump`) | bytes `ping` / `pong` |
+| `p2p_pair` | motor P2P (`Node` + `PeerLink`) | hello + bytes fragmentados |
+| `jpeg_over_uart` | transporte | bytes JPEG |
+| `firmware_flash` | transporte | bytes do arquivo |
+| `sensor_telemetry` | transporte | 8 bytes |
+| `radio_windowed` | transporte janelado | bytes, janela 8 |
 
-`firmware_flash` implementa `ByteSource` em `std::fs::File` — é o
-padrão para um binário de 4 GB. A crate continua sem possuir o arquivo.
+## Não negociável
 
-## Testes
+- `#![no_std]`, `#![forbid(unsafe_code)]`
+- Sem `Vec` / `String` / `Box` / allocator / async runtime
+- Todo tipo público tem tamanho conhecido em compile time
 
-```sh
-cargo test
-```
+## Contribuir / segurança
 
-Ver `tests/end_to_end.rs`, `tests/hostile.rs`, `tests/windowed.rs`,
-`tests/pump.rs`, `tests/p2p.rs` e `tests/forum.rs`.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`SECURITY.md`](SECURITY.md)
+- [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Licença
 
-Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)) ou MIT
-([LICENSE-MIT](LICENSE-MIT)), à sua escolha.
+Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)) ou MIT ([LICENSE-MIT](LICENSE-MIT)),
+à sua escolha.

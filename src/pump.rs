@@ -19,6 +19,7 @@ use crate::stream::StreamError;
 use crate::timeout::{IdleBudget, RetryPolicy};
 use crate::transport::{ByteSource, ByteTransport};
 use crate::tx::{Sender, TxPoll, TxState};
+use crate::window::{WindowedReceiver, WindowedSender};
 
 /// Session counters. `Copy`, stack-only, no logging.
 ///
@@ -271,6 +272,153 @@ where
                     budget.tick().map_err(StreamError::Protocol)?;
                 }
             }
+        }
+    }
+}
+
+/// Cooperative pump over a selective-repeat window (`N ≤ 8`).
+///
+/// Same poll contract as [`Pump`]: one RX step, one TX step, never a loop.
+/// Used by [`crate::PeerLink`] so a negotiated `WINDOW` is real on the wire.
+pub struct WindowedPump<Tx, Rx, const N: usize>
+where
+    Tx: ByteTransport,
+    Rx: ByteTransport<Error = Tx::Error>,
+{
+    tx: WindowedSender<Tx, N>,
+    rx: WindowedReceiver<Rx, N>,
+    stats: SessionStats,
+    last_acked: bool,
+}
+
+impl<Tx, Rx, const N: usize> WindowedPump<Tx, Rx, N>
+where
+    Tx: ByteTransport,
+    Rx: ByteTransport<Error = Tx::Error>,
+{
+    /// Wraps an existing windowed sender/receiver pair.
+    pub fn new(tx: WindowedSender<Tx, N>, rx: WindowedReceiver<Rx, N>) -> Self {
+        WindowedPump {
+            tx,
+            rx,
+            stats: SessionStats::default(),
+            last_acked: false,
+        }
+    }
+
+    /// `WindowedPump::on(uart_tx, uart_rx)`.
+    pub fn on(tx: Tx, rx: Rx) -> Self {
+        Self::new(WindowedSender::new(tx), WindowedReceiver::new(rx))
+    }
+
+    /// [`Self::on`] with an explicit [`RetryPolicy`].
+    pub fn on_with(tx: Tx, rx: Rx, policy: RetryPolicy) -> Self {
+        Self::new(
+            WindowedSender::with_policy(tx, policy),
+            WindowedReceiver::new(rx),
+        )
+    }
+
+    /// Current counters.
+    pub fn stats(&self) -> SessionStats {
+        self.stats
+    }
+
+    /// The windowed sender.
+    pub fn sender(&self) -> &WindowedSender<Tx, N> {
+        &self.tx
+    }
+
+    /// The windowed sender, mutably.
+    pub fn sender_mut(&mut self) -> &mut WindowedSender<Tx, N> {
+        &mut self.tx
+    }
+
+    /// The windowed receiver.
+    pub fn receiver(&self) -> &WindowedReceiver<Rx, N> {
+        &self.rx
+    }
+
+    /// The windowed receiver, mutably.
+    pub fn receiver_mut(&mut self) -> &mut WindowedReceiver<Rx, N> {
+        &mut self.rx
+    }
+
+    /// Runtime DATA window on both sides (`1..=N`).
+    pub fn set_window_limit(&mut self, limit: usize) {
+        self.tx.set_window_limit(limit);
+        self.rx.set_window_limit(limit);
+    }
+
+    /// Current runtime DATA window.
+    pub fn window_limit(&self) -> usize {
+        self.tx.window_limit()
+    }
+
+    /// Cancels the session: ABORT on the wire.
+    pub fn abort(&mut self) -> Result<(), Error<Tx::Error>> {
+        self.tx.offer_abort()
+    }
+
+    /// One non-blocking step: RX first, then TX. Never loops.
+    pub fn poll(&mut self) -> Result<PumpEvent, Error<Tx::Error>> {
+        self.stats.ticks = self.stats.ticks.saturating_add(1);
+
+        let rx = self.rx.poll()?;
+        match rx {
+            PollOutcome::Delivered(_) => {
+                self.stats.bytes_delivered = self.stats.bytes_delivered.saturating_add(1);
+            }
+            PollOutcome::DuplicateIgnored => {
+                self.stats.duplicates = self.stats.duplicates.saturating_add(1);
+            }
+            PollOutcome::Rejected => {
+                self.stats.nacks = self.stats.nacks.saturating_add(1);
+            }
+            PollOutcome::CrcRejected => {
+                self.stats.nacks = self.stats.nacks.saturating_add(1);
+                self.stats.crc_errors = self.stats.crc_errors.saturating_add(1);
+            }
+            PollOutcome::Aborted => {
+                if !self.tx.holds_session_control() {
+                    self.tx.force_abort();
+                }
+            }
+            PollOutcome::Pending | PollOutcome::Started | PollOutcome::TransferFinished => {}
+        }
+
+        let tx = self.tx.poll()?;
+        self.last_acked = matches!(tx, TxPoll::Acked);
+        let mark = self.tx.take_mark();
+        if mark.frame_on_wire {
+            self.stats.frames_sent = self.stats.frames_sent.saturating_add(1);
+        }
+        if mark.retransmit {
+            self.stats.retries = self.stats.retries.saturating_add(1);
+        }
+
+        if matches!(rx, PollOutcome::Aborted) || matches!(tx, TxPoll::Aborted) {
+            return Ok(PumpEvent::Aborted);
+        }
+        if matches!(rx, PollOutcome::TransferFinished) || matches!(tx, TxPoll::TransferDone) {
+            return Ok(PumpEvent::Completed);
+        }
+        if let PollOutcome::Delivered(byte) = rx {
+            return Ok(PumpEvent::Received(byte));
+        }
+        if matches!(tx, TxPoll::Acked) {
+            return Ok(PumpEvent::Sent);
+        }
+
+        let progress = !matches!(rx, PollOutcome::Pending)
+            || !matches!(tx, TxPoll::Pending)
+            || mark.frame_on_wire
+            || mark.retransmit
+            || mark.nack;
+        if progress {
+            Ok(PumpEvent::Progress)
+        } else {
+            Ok(PumpEvent::Idle)
         }
     }
 }

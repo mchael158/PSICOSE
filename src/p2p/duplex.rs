@@ -16,10 +16,13 @@
 
 use core::cell::RefCell;
 
+use crate::error::Error;
 use crate::protocol::{FrameAssembler, FrameType, FRAME_LEN};
-use crate::pump::Pump;
+use crate::pump::{Pump, PumpEvent, WindowedPump};
 use crate::timeout::RetryPolicy;
-use crate::transport::ByteTransport;
+use crate::transport::{ByteSink, ByteSource, ByteTransport};
+use crate::tx::TxState;
+use crate::window::MAX_WINDOW;
 
 const RING: usize = 64;
 
@@ -166,7 +169,7 @@ impl DuplexWire {
         )
     }
 
-    /// Two pumps, default retry policy: `let (a, b) = wire.pumps();`
+    /// Two stop-and-wait pumps: `let (a, b) = wire.pumps();`
     pub fn pumps(
         &self,
     ) -> (
@@ -190,6 +193,126 @@ impl DuplexWire {
             Pump::on_with(a_tx, a_rx, policy),
             Pump::on_with(b_tx, b_rx, policy),
         )
+    }
+
+    /// Two windowed pumps for [`super::PeerLink`] (`N = MAX_WINDOW`).
+    ///
+    /// Handshake runs with limit 1; after negotiate + `WINDOW`, the link
+    /// raises the runtime limit to the agreed `max_window`.
+    pub fn link_pumps(
+        &self,
+    ) -> (
+        WindowedPump<DuplexPort<'_>, DuplexPort<'_>, MAX_WINDOW>,
+        WindowedPump<DuplexPort<'_>, DuplexPort<'_>, MAX_WINDOW>,
+    ) {
+        let (a_tx, a_rx, b_tx, b_rx) = self.ends();
+        let mut a = WindowedPump::on(a_tx, a_rx);
+        let mut b = WindowedPump::on(b_tx, b_rx);
+        a.set_window_limit(1);
+        b.set_window_limit(1);
+        (a, b)
+    }
+
+    /// [`Self::link_pumps`] with an explicit [`RetryPolicy`].
+    pub fn link_pumps_with(
+        &self,
+        policy: RetryPolicy,
+    ) -> (
+        WindowedPump<DuplexPort<'_>, DuplexPort<'_>, MAX_WINDOW>,
+        WindowedPump<DuplexPort<'_>, DuplexPort<'_>, MAX_WINDOW>,
+    ) {
+        let (a_tx, a_rx, b_tx, b_rx) = self.ends();
+        let mut a = WindowedPump::on_with(a_tx, a_rx, policy);
+        let mut b = WindowedPump::on_with(b_tx, b_rx, policy);
+        a.set_window_limit(1);
+        b.set_window_limit(1);
+        (a, b)
+    }
+
+    /// Framework motor: stop-and-wait copy **A → B** on this wire.
+    ///
+    /// Examples call this instead of inventing their own UART ring. The
+    /// pumps, ACKs, and CRC path are entirely PSICOSE.
+    pub fn copy<S, K>(&self, src: &mut S, sink: &mut K) -> Result<usize, WireCopyError>
+    where
+        S: ByteSource,
+        K: ByteSink,
+    {
+        let (mut a, mut b) = self.pumps();
+        let mut hold: Option<u8> = None;
+        let mut exhausted = false;
+        let mut finish_offered = false;
+        let mut n = 0usize;
+
+        for _ in 0..1_000_000 {
+            if hold.is_none() && !exhausted {
+                match src.read_byte() {
+                    Ok(Some(byte)) => hold = Some(byte),
+                    Ok(None) => exhausted = true,
+                    Err(_) => return Err(WireCopyError::Source),
+                }
+            }
+
+            if a.sender().state() == TxState::Idle {
+                if let Some(byte) = hold.take() {
+                    if a.sender_mut().offer(byte).is_err() {
+                        hold = Some(byte);
+                    }
+                } else if exhausted && !finish_offered {
+                    match a.sender_mut().offer_finish() {
+                        Ok(()) => finish_offered = true,
+                        Err(Error::NotIdle) => {}
+                        Err(_) => return Err(WireCopyError::Protocol),
+                    }
+                }
+            }
+
+            match a.poll() {
+                Ok(PumpEvent::Aborted) => return Err(WireCopyError::Protocol),
+                Ok(PumpEvent::Completed) if finish_offered => {}
+                Ok(_) => {}
+                Err(_) => return Err(WireCopyError::Protocol),
+            }
+
+            match b.poll() {
+                Ok(PumpEvent::Received(byte)) => {
+                    if sink.write_byte(byte).is_err() {
+                        return Err(WireCopyError::Sink);
+                    }
+                    n = n.saturating_add(1);
+                }
+                Ok(PumpEvent::Completed) => return Ok(n),
+                Ok(PumpEvent::Aborted) => return Err(WireCopyError::Protocol),
+                Ok(_) => {}
+                Err(_) => return Err(WireCopyError::Protocol),
+            }
+        }
+
+        Err(WireCopyError::Stalled)
+    }
+}
+
+/// Why [`DuplexWire::copy`] stopped early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireCopyError {
+    /// [`ByteSource`] failed.
+    Source,
+    /// [`ByteSink`] failed.
+    Sink,
+    /// Protocol / transport error (ABORT, retries, …).
+    Protocol,
+    /// Idle budget style stall (too many polls, no progress).
+    Stalled,
+}
+
+impl core::fmt::Display for WireCopyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            WireCopyError::Source => write!(f, "wire copy: source error"),
+            WireCopyError::Sink => write!(f, "wire copy: sink error"),
+            WireCopyError::Protocol => write!(f, "wire copy: protocol error"),
+            WireCopyError::Stalled => write!(f, "wire copy: stalled"),
+        }
     }
 }
 

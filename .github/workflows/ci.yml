@@ -21,14 +21,17 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --all-targets --features aead -- -D warnings
+      - run: cargo clippy --all-targets --features embedded-io -- -D warnings
       - run: cargo test
       - run: cargo test --features aead
+      - run: cargo test --features embedded-io
       - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --features aead
+        run: cargo doc --no-deps --all-features
       - run: cargo run --example jpeg_over_uart
       - run: cargo run --example firmware_flash
       - run: cargo run --example sensor_telemetry
       - run: cargo run --example radio_windowed
-      - run: cargo run --example forum
+      - run: cargo run --example ab_direct
+      - run: cargo run --example p2p_pair

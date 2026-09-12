@@ -1,12 +1,43 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.1 — 2026-09-12
+
+### Features
+- **API catalog** — `docs/API.md` / `docs/API.pt-BR.md` list every
+  root export and what it does; linked from crate rustdoc, PROTOCOL
+  §11.6, and `prelude`.
+- **`Node` as framework entry** — identity + neighbor table; `connect` /
+  `accept` open `PeerLink`s. Helpers `establish` / `send_message` live in
+  the crate so examples do not reinvent P2P.
+- **`Wire::copy`** — stop-and-wait A→B through the motor (used by
+  `ab_direct`, `jpeg_over_uart`, `sensor_telemetry`).
+- Feature `embedded-io`: `IoTransport` / `IoSource` / `IoSink` adapters
+  from `embedded-io` **0.6** (`Read` + `Write` + `ReadReady`). Pinned to
+  0.6 so MSRV 1.75 keeps resolving (`0.7` needs rustc 1.81+).
+  Module path: `psicose::transport::embedded_io`. Wired through crate
+  root, `prelude`, `ByteTransport` docs, PROTOCOL §8.1, examples harness
+  comments, and `Pump::on(IoTransport, …)` unit smoke test.
+- CI covers `--features embedded-io` and `cargo doc --all-features`.
+- `PeerLink` honours `Capabilities::WINDOW` after hello (runtime
+  `set_window_limit`); stop-and-wait when the bit is absent.
+
 ## 0.3.0 — 2026-09-12
 
 ### Layout
 - Spec moved to `docs/PROTOCOL.md` (+ pt-BR). Example harness to
   `examples/common/link.rs`.
+- Example `forum` replaced by `ab_direct` (transport) + `p2p_pair`
+  (framework P2P). Crate docs framed as one `no_std` framework with P2P
+  in-tree, not a separate package.
 - crates.io packaging: `homepage`, docs.rs `all-features` + `docsrs`
   cfg / `doc(cfg)` on `aead`, CI badge on READMEs.
+- Public presence: punchier READMEs (when to use / 30s try),
+  `SECURITY.md`, `CONTRIBUTING.md`.
+- `PeerLink` uses `WindowedPump` (`Wire::link_pumps`). After hello,
+  `Capabilities::WINDOW` raises the runtime DATA window to negotiated
+  `max_window`; without the bit, DATA stays stop-and-wait (limit 1).
 
 ### Transport maturity
 - Status: **usable** reliable byte transport (no longer framed as

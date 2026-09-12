@@ -13,7 +13,7 @@ use common::{established, send};
 fn peers_exchange_bytes_both_ways() {
     let cfg = SessionConfig::FORUM;
     let wire = Wire::new();
-    let (pump_a, pump_b) = wire.pumps();
+    let (pump_a, pump_b) = wire.link_pumps();
 
     let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
     let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);

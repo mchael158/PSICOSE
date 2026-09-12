@@ -1,20 +1,12 @@
-//! Camera → host over UART.
-//!
-//! A cheap CMOS module (OV2640-class) just filled a RAM buffer with a JPEG.
-//! The MCU has no heap and must not copy the image. PSICOSE walks the buffer
-//! one byte at a time onto a UART; the host reconstructs the file.
+//! Camera → host over UART through the **PSICOSE motor**.
 //!
 //! ```text
-//! camera RAM  --ByteSource-->  PSICOSE  --UART-->  host file / RAM
-//!    JPEG                         1 B
+//! camera RAM  --SliceSource-->  Wire::copy  --UART path-->  host
 //! ```
 //!
 //! Run: `cargo run --example jpeg_over_uart`
 
-#[path = "common/link.rs"]
-mod link;
-
-use psicose::{SliceSink, SliceSource};
+use psicose::{SliceSink, SliceSource, Wire};
 
 fn main() {
     // Tiny JPEG: SOI + APP0 "JFIF". A real capture is kilobytes; the path is identical.
@@ -35,7 +27,7 @@ fn main() {
     let mut host_file = [0u8; 20];
     let mut sink = SliceSink::new(&mut host_file);
 
-    match link::copy_stop_and_wait(&mut src, &mut sink) {
+    match Wire::new().copy(&mut src, &mut sink) {
         Ok(n) => {
             assert_eq!(n, 20);
             assert_eq!(sink.written(), &camera_ram[..]);
@@ -43,7 +35,7 @@ fn main() {
             println!("jpeg_over_uart: {n} bytes, SOI ok, host file matches camera RAM");
         }
         Err(e) => {
-            eprintln!("jpeg_over_uart failed: {e:?}");
+            eprintln!("jpeg_over_uart failed: {e}");
             std::process::exit(1);
         }
     }

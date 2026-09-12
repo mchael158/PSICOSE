@@ -146,7 +146,7 @@ fn connect_and_accept_establish_a_and_b() {
     let mut bob = PeerTable::<4>::new(id_b);
 
     let wire = Wire::new();
-    let (pump_a, pump_b) = wire.pumps();
+    let (pump_a, pump_b) = wire.link_pumps();
     let mut a = match PeerLink::connect(&mut alice, pump_a) {
         Ok(link) => link,
         Err(_) => return,
@@ -170,7 +170,7 @@ fn established_link_delivers_a_data_byte() {
     let mut alice = PeerTable::<2>::new(PeerId::from_label(b"alice"));
     let mut bob = PeerTable::<2>::new(PeerId::from_label(b"bob"));
     let wire = Wire::new();
-    let (pump_a, pump_b) = wire.pumps();
+    let (pump_a, pump_b) = wire.link_pumps();
     let mut a = match PeerLink::connect(&mut alice, pump_a) {
         Ok(link) => link,
         Err(_) => return,
@@ -194,6 +194,47 @@ fn established_link_delivers_a_data_byte() {
         }
     }
     assert_eq!(got, Some(b'~'));
+}
+
+#[test]
+fn peerlink_pipelines_when_window_bit_is_set() {
+    let cfg = SessionConfig::FORUM;
+    let mut alice = PeerTable::<4>::with(PeerId::from_label(b"alice"), cfg);
+    let mut bob = PeerTable::<4>::with(PeerId::from_label(b"bob"), cfg);
+    let wire = Wire::new();
+    let (pump_a, pump_b) = wire.link_pumps();
+    let mut a = match PeerLink::connect(&mut alice, pump_a) {
+        Ok(link) => link,
+        Err(_) => return,
+    };
+    let mut b = PeerLink::accept(&bob, pump_b);
+    assert!(established(&mut a, &mut alice, &mut b, &mut bob));
+    assert_eq!(a.pump().window_limit(), 8);
+    assert_eq!(b.pump().window_limit(), 8);
+
+    assert_eq!(a.offer(1), Ok(()));
+    assert_eq!(a.offer(2), Ok(()));
+    assert_eq!(a.offer(3), Ok(()));
+    assert!(a.pump().sender().outstanding() >= 3);
+}
+
+#[test]
+fn peerlink_stays_stop_and_wait_without_window_bit() {
+    // SessionConfig::DEFAULT: max_window 8 but no WINDOW capability.
+    let mut alice = PeerTable::<4>::new(PeerId::from_label(b"alice"));
+    let mut bob = PeerTable::<4>::new(PeerId::from_label(b"bob"));
+    let wire = Wire::new();
+    let (pump_a, pump_b) = wire.link_pumps();
+    let mut a = match PeerLink::connect(&mut alice, pump_a) {
+        Ok(link) => link,
+        Err(_) => return,
+    };
+    let mut b = PeerLink::accept(&bob, pump_b);
+    assert!(established(&mut a, &mut alice, &mut b, &mut bob));
+    assert_eq!(a.pump().window_limit(), 1);
+
+    assert_eq!(a.offer(1), Ok(()));
+    assert_eq!(a.offer(2), Err(psicose::Error::WindowFull));
 }
 
 #[test]
