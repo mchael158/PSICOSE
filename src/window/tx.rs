@@ -50,7 +50,7 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
 
     /// Explicit [`RetryPolicy`].
     pub fn with_policy(transport: T, retry_policy: RetryPolicy) -> Self {
-        let () = check_window::<N>();
+        check_window::<N>();
         WindowedSender {
             transport,
             next_seq: Sequence::new(),
@@ -128,7 +128,10 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
 
     fn has_session_flight(&self) -> bool {
         for slot in self.slots.iter().flatten() {
-            if matches!(slot.kind, FlightKind::Start | FlightKind::Finish | FlightKind::Abort) {
+            if matches!(
+                slot.kind,
+                FlightKind::Start | FlightKind::Finish | FlightKind::Abort
+            ) {
                 return true;
             }
         }
@@ -173,7 +176,10 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
     /// `[oldest_unacked, oldest_unacked+N)` has room, even if other
     /// frames are still in flight.
     pub fn offer(&mut self, data: u8) -> Result<(), Error<T::Error>> {
-        if matches!(self.state, TxState::Finished | TxState::Aborted | TxState::Failed) {
+        if matches!(
+            self.state,
+            TxState::Finished | TxState::Aborted | TxState::Failed
+        ) {
             return Err(Error::NotIdle);
         }
         if self.has_session_flight() {
@@ -190,7 +196,10 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
 
     /// Queues FINISH at the next unused sequence. The window must be empty.
     pub fn offer_finish(&mut self) -> Result<(), Error<T::Error>> {
-        if matches!(self.state, TxState::Finished | TxState::Aborted | TxState::Failed) {
+        if matches!(
+            self.state,
+            TxState::Finished | TxState::Aborted | TxState::Failed
+        ) {
             return Err(Error::NotIdle);
         }
         if self.outstanding() != 0 || self.has_session_flight() {
@@ -205,7 +214,12 @@ impl<T: ByteTransport, const N: usize> WindowedSender<T, N> {
         if matches!(self.state, TxState::Aborted) && self.outstanding() == 0 && self.out.is_idle() {
             return Ok(());
         }
-        if self.slots.iter().flatten().any(|s| matches!(s.kind, FlightKind::Abort)) {
+        if self
+            .slots
+            .iter()
+            .flatten()
+            .any(|s| matches!(s.kind, FlightKind::Abort))
+        {
             return Ok(());
         }
         self.slots = [None; N];
@@ -556,7 +570,10 @@ mod tests {
         assert_eq!(tx.outstanding(), 0);
         assert_eq!(
             tx.transport.written(),
-            concat2(Frame::data(0, 0xAA).to_bytes(), Frame::data(1, 0xBB).to_bytes())
+            concat2(
+                Frame::data(0, 0xAA).to_bytes(),
+                Frame::data(1, 0xBB).to_bytes()
+            )
         );
     }
 

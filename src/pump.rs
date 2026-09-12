@@ -16,7 +16,7 @@
 use crate::error::Error;
 use crate::rx::{PollOutcome, Receiver};
 use crate::stream::StreamError;
-use crate::timeout::RetryPolicy;
+use crate::timeout::{IdleBudget, RetryPolicy};
 use crate::transport::{ByteSource, ByteTransport};
 use crate::tx::{Sender, TxPoll, TxState};
 
@@ -176,9 +176,7 @@ where
                     self.tx.force_abort();
                 }
             }
-            PollOutcome::Pending
-            | PollOutcome::Started
-            | PollOutcome::TransferFinished => {}
+            PollOutcome::Pending | PollOutcome::Started | PollOutcome::TransferFinished => {}
         }
 
         let tx = self.tx.poll()?;
@@ -218,11 +216,26 @@ where
 
     /// Drain `src` through the pump, then FINISH. Convenience over [`Self::poll`].
     ///
+    /// Uses [`IdleBudget::DEFAULT`] so a silent peer cannot spin forever.
+    /// Override with [`Self::send_all_budgeted`].
+    ///
     /// Returns how many DATA bytes the peer ACKed. On a single-thread pair
     /// this works because each poll serves RX (so ACKs are written) and TX.
     pub fn send_all<S: ByteSource>(
         &mut self,
         src: &mut S,
+    ) -> Result<u64, StreamError<Tx::Error, S::Error>> {
+        self.send_all_budgeted(src, IdleBudget::DEFAULT)
+    }
+
+    /// [`Self::send_all`] with an [`IdleBudget`] so a silent peer cannot spin
+    /// forever. Retransmit/`Progress` polls do **not** reset the budget —
+    /// only [`PumpEvent::Sent`] / [`PumpEvent::Received`] do. Per-frame
+    /// retries remain governed by [`RetryPolicy`].
+    pub fn send_all_budgeted<S: ByteSource>(
+        &mut self,
+        src: &mut S,
+        mut budget: IdleBudget,
     ) -> Result<u64, StreamError<Tx::Error, S::Error>> {
         let mut n = 0u64;
         let mut hold = None;
@@ -253,10 +266,10 @@ where
             match ev {
                 PumpEvent::Completed => return Ok(n),
                 PumpEvent::Aborted => return Err(StreamError::Protocol(Error::Aborted)),
-                PumpEvent::Idle
-                | PumpEvent::Progress
-                | PumpEvent::Sent
-                | PumpEvent::Received(_) => {}
+                PumpEvent::Sent | PumpEvent::Received(_) => budget.reset(),
+                PumpEvent::Idle | PumpEvent::Progress => {
+                    budget.tick().map_err(StreamError::Protocol)?;
+                }
             }
         }
     }

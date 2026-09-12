@@ -2,6 +2,8 @@
 //!
 //! Each example is a single thread. The "wire" is two heapless rings.
 //! Swap `End` for a real UART driver in the field — the rest stays.
+//! Shared harness for sibling examples (`#[path = "common/link.rs"]`).
+//! Not a runnable demo — each example uses only a subset of these helpers.
 #![allow(dead_code)]
 
 use core::cell::RefCell;
@@ -12,6 +14,9 @@ use psicose::rx::PollOutcome;
 use psicose::transport::{ByteSink, ByteSource, ByteTransport};
 use psicose::tx::{TxPoll, TxState};
 use psicose::window::{WindowedReceiver, WindowedSender};
+use psicose::{
+    Defragmenter, DuplexPort, Fragmenter, LinkEvent, MessageId, PeerLink, PeerTable, StreamId,
+};
 
 const RING: usize = 256;
 
@@ -238,18 +243,103 @@ where
     Err(CopyError::Stalled)
 }
 
-fn main() {}
-
 /// Pair of ends on the same wire, for examples that wrap the transport.
 pub fn pair(wires: &RefCell<Wires>) -> (End<'_>, End<'_>) {
-    (
-        End {
-            wires,
-            is_a: true,
-        },
-        End {
-            wires,
-            is_a: false,
-        },
-    )
+    (End { wires, is_a: true }, End { wires, is_a: false })
+}
+
+/// In-memory A↔B [`PeerLink`] over [`psicose::Wire`].
+pub type Peer<'w> = PeerLink<DuplexPort<'w>, DuplexPort<'w>>;
+
+/// Drive both links until hellos cross (or fail).
+pub fn established<const N: usize>(
+    a: &mut Peer<'_>,
+    alice: &mut PeerTable<N>,
+    b: &mut Peer<'_>,
+    bob: &mut PeerTable<N>,
+) -> bool {
+    let mut a_ok = false;
+    let mut b_ok = false;
+    let mut i = 0usize;
+    while i < 100_000 {
+        i += 1;
+        match a.poll(alice) {
+            Ok(LinkEvent::Established) => a_ok = true,
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        match b.poll(bob) {
+            Ok(LinkEvent::Established) => b_ok = true,
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        if a_ok && b_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fragment `body` over `tx` and rebuild into `inbox` via `rx`.
+pub fn send_message<const N: usize>(
+    tx: &mut Peer<'_>,
+    tx_table: &mut PeerTable<N>,
+    rx: &mut Peer<'_>,
+    rx_table: &mut PeerTable<N>,
+    id: u16,
+    body: &[u8],
+    inbox: &mut Defragmenter<'_>,
+) -> bool {
+    inbox.reset();
+    let mut frag = Fragmenter::new(StreamId::FORUM, MessageId::new(id), body, 4);
+    while let Some((header, chunk)) = frag.next_fragment() {
+        for b in header.to_bytes() {
+            if !offer(tx, tx_table, rx, rx_table, b, inbox) {
+                return false;
+            }
+        }
+        for &b in chunk {
+            if !offer(tx, tx_table, rx, rx_table, b, inbox) {
+                return false;
+            }
+        }
+    }
+    inbox.is_complete()
+}
+
+fn offer<const N: usize>(
+    tx: &mut Peer<'_>,
+    tx_table: &mut PeerTable<N>,
+    rx: &mut Peer<'_>,
+    rx_table: &mut PeerTable<N>,
+    byte: u8,
+    inbox: &mut Defragmenter<'_>,
+) -> bool {
+    let mut hold = Some(byte);
+    let mut steps = 0usize;
+    while steps < 20_000 {
+        steps += 1;
+        if let Some(b) = hold {
+            if tx.offer(b).is_ok() {
+                hold = None;
+            }
+        }
+        match tx.poll(tx_table) {
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        match rx.poll(rx_table) {
+            Ok(LinkEvent::Received(got)) => {
+                if inbox.push(got).is_err() {
+                    return false;
+                }
+            }
+            Ok(LinkEvent::Aborted) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        if hold.is_none() && tx.pump().sender().state() == TxState::Idle {
+            return true;
+        }
+    }
+    false
 }

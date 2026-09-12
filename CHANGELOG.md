@@ -1,12 +1,37 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-12
 
-- `PeerId::from_label(b"alice")` pads or truncates to 8 bytes. `Display`
-  prints the label when it is printable ASCII plus trailing zeros.
-- `StreamId::FORUM`, `SessionConfig::FORUM`, and `Defragmenter` (pair of
-  `Fragmenter`). Example `forum` and test `tests/forum.rs`: Alice ↔ Bob
-  handshake, then payload bytes both ways (`ping` / `pong`). Not a forum.
+### Layout
+- Spec moved to `docs/PROTOCOL.md` (+ pt-BR). Example harness to
+  `examples/common/link.rs`.
+- crates.io packaging: `homepage`, docs.rs `all-features` + `docsrs`
+  cfg / `doc(cfg)` on `aead`, CI badge on READMEs.
+
+### Transport maturity
+- Status: **usable** reliable byte transport (no longer framed as
+  experimental-only). Threat model documented in `docs/PROTOCOL.md`: CRC-8 is
+  noise detection, not authenticity.
+- `IdleBudget::DEFAULT` (1_000_000 idle ticks). `Pump::send_all`,
+  `recv_all`, `recv_all_windowed`, and `send_all_windowed` use it so a
+  silent peer cannot hang forever. Override with `*_budgeted` /
+  `IdleBudget::unbounded` for scripted tests.
+- Cleanup carried from unreleased 0.2.x work: `MockFull`, honest
+  capability docs, CI lint/doc/`forum`, dead-code cleanup.
+
+### Authenticated encryption (optional)
+- Feature `aead`: ChaCha20-Poly1305 (RFC 8439) via RustCrypto,
+  `no_std`, stack buffers — `seal` / `open` / `seal_to` / `open_from` /
+  `sealed_len`.
+- Re-exported at crate root and in `prelude` when the feature is on.
+- `SessionConfig::SECURE` = `FORUM` + `ENCRYPTION` (announce only;
+  application still calls `seal_to` / `open_from`).
+- `Capabilities` docs: bits are announcements; they do not auto-switch
+  `PeerLink` internals.
+- Integration test `aead_stack` (required-features = `aead`).
+- Default build stays **zero dependencies**. Transitive `zeroize` pinned
+  `<1.9` so MSRV 1.75 keeps resolving.
+- `IdleBudget` implements `Default` (= `DEFAULT`).
 
 ## 0.2.3 — 2026-09-11
 
@@ -32,7 +57,7 @@
   `Wire::new().pumps()`, `Pump::on(tx, rx)`, `PeerLink::connect` /
   `accept`, `link.offer(byte)`, `PeerId::from([u8; 8])`,
   `SessionConfig::offer(window, features)`, `Capabilities::STREAM | …`.
-  Spec: `PROTOCOL.md` §11.
+  Spec: `docs/PROTOCOL.md` §11.
 
 ## 0.2.2 — 2026-09-10
 

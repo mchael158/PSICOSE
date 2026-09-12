@@ -39,8 +39,8 @@ fn delivers_bytes_in_order_across_a_sequence_wraparound() {
     finish_coop(&mut sender, &mut receiver, &mut received, &mut n);
 
     assert_eq!(n, N);
-    for i in 0..N {
-        assert_eq!(received[i], (i % 256) as u8);
+    for (i, byte) in received[..N].iter().enumerate() {
+        assert_eq!(*byte, (i % 256) as u8);
     }
 }
 
@@ -146,8 +146,8 @@ fn ten_thousand_bytes_wrap_the_sequence_repeatedly() {
     finish_coop(&mut sender, &mut receiver, &mut received, &mut n);
 
     assert_eq!(n, N);
-    for i in 0..N {
-        assert_eq!(received[i], (i % 256) as u8);
+    for (i, byte) in received[..N].iter().enumerate() {
+        assert_eq!(*byte, (i % 256) as u8);
     }
 }
 

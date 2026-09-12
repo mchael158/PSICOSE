@@ -102,14 +102,14 @@ fn message_fragments_cross_a_pump() {
 
         let mut i = 0usize;
         while i < n {
-            assert_eq!(inbox.push(got[i]).is_ok(), true);
+            assert!(inbox.push(got[i]).is_ok());
             i += 1;
         }
         fragments += 1;
     }
 
     assert_eq!(fragments, 1);
-    assert_eq!(inbox.is_complete(), true);
+    assert!(inbox.is_complete());
     assert_eq!(inbox.as_slice(), payload);
 }
 
@@ -153,7 +153,7 @@ fn connect_and_accept_establish_a_and_b() {
     };
     let mut b = PeerLink::accept(&bob, pump_b);
 
-    assert_eq!(established(&mut a, &mut alice, &mut b, &mut bob), true);
+    assert!(established(&mut a, &mut alice, &mut b, &mut bob));
     assert_eq!(a.session().state(), SessionState::Established);
     assert_eq!(b.session().state(), SessionState::Established);
     assert_eq!(a.session().remote(), Some(id_b));
@@ -176,7 +176,7 @@ fn established_link_delivers_a_data_byte() {
         Err(_) => return,
     };
     let mut b = PeerLink::accept(&bob, pump_b);
-    assert_eq!(established(&mut a, &mut alice, &mut b, &mut bob), true);
+    assert!(established(&mut a, &mut alice, &mut b, &mut bob));
 
     assert_eq!(a.offer(b'~'), Ok(()));
     let mut got = None;

@@ -28,6 +28,9 @@ pub enum Error<E> {
     ///
     /// [`RetryPolicy::max_retries`]: crate::timeout::RetryPolicy::max_retries
     RetriesExhausted,
+    /// An outer cooperative loop saw too many consecutive polls with no
+    /// application progress ([`IdleBudget`](crate::timeout::IdleBudget)).
+    IdleBudgetExhausted,
     /// `offer` / `offer_start` / `offer_finish` was called while the
     /// sender was not in a state that can accept a new flight.
     NotIdle,
@@ -57,6 +60,9 @@ impl<E: core::fmt::Debug> core::fmt::Display for Error<E> {
             Error::InvalidSemantics => write!(f, "semantically invalid control frame"),
             Error::Timeout => write!(f, "timed out waiting for a response"),
             Error::RetriesExhausted => write!(f, "retransmission budget exhausted"),
+            Error::IdleBudgetExhausted => {
+                write!(f, "idle budget exhausted (no application progress)")
+            }
             Error::NotIdle => write!(f, "sender is not idle"),
             Error::WindowFull => write!(f, "send window is full"),
             Error::Aborted => write!(f, "session aborted"),

@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn pending_until_frame_is_assembled_and_ack_is_written() {
-        let bytes = Frame::data_frame(0, 0x42).to_bytes();
+        let bytes = Frame::data(0, 0x42).to_bytes();
         let mut actor = RxActor::new(MockTransport::with_incoming(&bytes));
 
         assert_eq!(actor.tick(), Ok(Tick::Pending));
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn delivers_in_order_byte_and_finish_is_done() {
         let incoming = crate::test_support::concat2(
-            Frame::data_frame(0, 0xAA).to_bytes(),
+            Frame::data(0, 0xAA).to_bytes(),
             Frame::finish(1).to_bytes(),
         );
         let mut actor = RxActor::new(MockTransport::with_incoming(&incoming));
@@ -116,8 +116,8 @@ mod tests {
     #[test]
     fn duplicate_retransmission_is_pending_not_ready() {
         let incoming = crate::test_support::concat2(
-            Frame::data_frame(0, 0x11).to_bytes(),
-            Frame::data_frame(0, 0x11).to_bytes(),
+            Frame::data(0, 0x11).to_bytes(),
+            Frame::data(0, 0x11).to_bytes(),
         );
         let mut actor = RxActor::new(MockTransport::with_incoming(&incoming));
 
@@ -134,10 +134,10 @@ mod tests {
     fn two_links_are_served_by_one_system_without_blocking() {
         let mut sys: System<RxActor<MockTransport>, 2> = System::new();
         let a = sys.spawn(RxActor::new(MockTransport::with_incoming(
-            &Frame::data_frame(0, 0x10).to_bytes(),
+            &Frame::data(0, 0x10).to_bytes(),
         )));
         let b = sys.spawn(RxActor::new(MockTransport::with_incoming(
-            &Frame::data_frame(0, 0x20).to_bytes(),
+            &Frame::data(0, 0x20).to_bytes(),
         )));
         assert!(a.is_ok());
         assert!(b.is_ok());
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn corrupted_frame_is_rejected_not_delivered() {
-        let mut bytes = Frame::data_frame(0, 1).to_bytes();
+        let mut bytes = Frame::data(0, 1).to_bytes();
         bytes[2] ^= 0xFF;
         let mut actor = RxActor::new(MockTransport::with_incoming(&bytes));
 

@@ -75,14 +75,11 @@ mod tests {
     #[test]
     fn yields_none_until_full() {
         let mut asm = FrameAssembler::new();
-        let bytes = Frame::data_frame(3, 0x55).to_bytes();
+        let bytes = Frame::data(3, 0x55).to_bytes();
         assert!(asm.push(bytes[0]).is_none());
         assert!(asm.push(bytes[1]).is_none());
         assert!(asm.push(bytes[2]).is_none());
-        assert_eq!(
-            asm.push(bytes[3]),
-            Some(Ok(Frame::data_frame(3, 0x55)))
-        );
+        assert_eq!(asm.push(bytes[3]), Some(Ok(Frame::data(3, 0x55))));
     }
 
     #[test]
@@ -116,10 +113,10 @@ mod tests {
         assert_eq!(last, Some(Ok(Frame::ack(9))));
     }
 
-    #[test] 
+    #[test]
     fn propagates_decode_errors_and_still_resets() {
         let mut asm = FrameAssembler::new();
-        let mut bytes = Frame::data_frame(1, 1).to_bytes();
+        let mut bytes = Frame::data(1, 1).to_bytes();
         bytes[0] = 0x00; // invalid type
         let mut last = None;
         for b in bytes {

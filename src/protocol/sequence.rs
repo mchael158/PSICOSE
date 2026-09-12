@@ -70,7 +70,11 @@ mod tests {
         }
         assert_eq!(seq.current(), 255);
         assert_eq!(seq.advance(), 255);
-        assert_eq!(seq.current(), 0, "sequence must wrap 255 -> 0, not overflow");
+        assert_eq!(
+            seq.current(),
+            0,
+            "sequence must wrap 255 -> 0, not overflow"
+        );
     }
 
     #[test]

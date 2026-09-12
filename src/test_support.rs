@@ -22,16 +22,10 @@ pub fn concat3(a: [u8; 4], b: [u8; 4], c: [u8; 4]) -> [u8; 12] {
     out
 }
 
-/// Concatenate four 4-byte frames into one stack buffer.
-#[allow(dead_code)]
-pub fn concat4(a: [u8; 4], b: [u8; 4], c: [u8; 4], d: [u8; 4]) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    out[..4].copy_from_slice(&a);
-    out[4..8].copy_from_slice(&b);
-    out[8..12].copy_from_slice(&c);
-    out[12..].copy_from_slice(&d);
-    out
-}
+/// Outgoing script buffer is full ([`CAP`] bytes). Matches `DuplexFull` /
+/// `LinkFull`: overflow is an error, never a silent drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MockFull;
 
 /// A scripted, single-ended in-memory transport backed by fixed arrays.
 pub struct MockTransport {
@@ -44,6 +38,8 @@ pub struct MockTransport {
 
 impl MockTransport {
     /// Yields exactly `bytes` from `read_byte`, then `Ok(None)`.
+    ///
+    /// If `bytes.len() > CAP`, only the first [`CAP`] bytes are kept.
     pub fn with_incoming(bytes: &[u8]) -> Self {
         let n = core::cmp::min(bytes.len(), CAP);
         let mut incoming = [0u8; CAP];
@@ -64,13 +60,14 @@ impl MockTransport {
 }
 
 impl ByteTransport for MockTransport {
-    type Error = core::convert::Infallible;
+    type Error = MockFull;
 
     fn write_byte(&mut self, byte: u8) -> Result<(), Self::Error> {
-        if self.written_len < CAP {
-            self.written_buf[self.written_len] = byte;
-            self.written_len += 1;
+        if self.written_len >= CAP {
+            return Err(MockFull);
         }
+        self.written_buf[self.written_len] = byte;
+        self.written_len += 1;
         Ok(())
     }
 
@@ -81,5 +78,22 @@ impl ByteTransport for MockTransport {
         let byte = self.incoming[self.incoming_pos];
         self.incoming_pos += 1;
         Ok(Some(byte))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_full_is_an_error_not_a_silent_drop() {
+        let mut t = MockTransport::with_incoming(&[]);
+        for i in 0..CAP {
+            assert_eq!(t.write_byte(i as u8), Ok(()));
+        }
+        assert_eq!(t.written().len(), CAP);
+        assert_eq!(t.write_byte(0xFF), Err(MockFull));
+        assert_eq!(t.written().len(), CAP);
+        assert_eq!(t.written()[CAP - 1], (CAP - 1) as u8);
     }
 }

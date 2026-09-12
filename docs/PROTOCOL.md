@@ -1,4 +1,4 @@
-# PSICOSE-1B — formal protocol (0.2.3)
+# PSICOSE-1B — formal protocol (0.3.0)
 
 [English](PROTOCOL.md) · [Português (Brasil)](PROTOCOL.pt-BR.md)
 
@@ -6,8 +6,21 @@ A `no_std`, heapless transport machine. This file is the specification.
 The code in `src/` is the implementation. If they diverge, the
 adversarial tests in `tests/hostile.rs` decide.
 
-**Status:** experimental reliable byte transport plus a P2P layer that
-rides the same 4-byte frame as payload. Not a final protocol.
+**Status:** usable reliable byte transport plus an optional P2P layer on
+the same 4-byte frame. Feature `aead` adds ChaCha20-Poly1305 **above**
+the transport for real confidentiality and authenticity.
+
+## Threat model
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| Detect accidental bit errors on a frame | CRC-8 on `TYPE‖SEQ‖DATA` |
+| Deliver payload bytes in order, at most once | SEQ + ACK/NACK + retransmit |
+| Bound hangs on a silent peer | `RetryPolicy` (per frame) + `IdleBudget` (outer loops) |
+| Confidentiality / authenticity vs active attacker | **Not** CRC. Feature `aead` (`psicose::aead`) on application messages |
+
+An adversary who can inject or modify bytes on the link can forge a
+CRC-valid frame. Treat CRC as noise protection only.
 
 ```
                     APPLICATION
@@ -427,12 +440,14 @@ CRC is **not** a capability. The transport frame always carries it.
 | 0 | `WINDOW` | Selective-repeat (`N ≤ 8`) |
 | 1 | `STREAM` | Logical streams over the session |
 | 2 | `FORUM` | Application messages (not a forum product) |
-| 3 | `COMPRESSION` | Payload compression (above the transport) |
-| 4 | `ENCRYPTION` | Payload encryption (above the transport) |
+| 3 | `COMPRESSION` | **Reserved.** Advertisement only; no compression in 0.3.x |
+| 4 | `ENCRYPTION` | With feature `aead`: ChaCha20-Poly1305 above the transport. Without `aead`: advertisement only |
 | 5 | `FRAGMENTATION` | Message fragmentation (`Fragmenter`) |
 
-Unknown bits are kept as-is and die in the intersection with a peer
-that does not set them.
+Setting `COMPRESSION` does not change wire payloads. `ENCRYPTION` only
+has meaning when both peers build with `aead` and seal application
+data before offering bytes to PSICOSE. Unknown bits are kept as-is and
+die in the intersection with a peer that does not set them.
 
 Negotiation is deterministic and has no extra round: min version, min
 window, intersection of feature bits. Both ends compute the same

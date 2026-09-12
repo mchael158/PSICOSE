@@ -1,4 +1,4 @@
-//! The names you write.
+//! The names you write: `use psicose::prelude::*;`
 //!
 //! ```
 //! use psicose::prelude::*;
@@ -19,8 +19,13 @@
 
 pub use crate::{
     ByteSink, ByteSource, ByteTransport, Capabilities, DefragError, Defragmenter, DuplexPort,
-    DuplexWire, Error, Fragmenter, Frame, LinkEvent, MessageHeader, MessageId, PeerId, PeerLink,
-    PeerSession, PeerTable, PollOutcome, Pump, PumpEvent, Receiver, RetryPolicy, Sender,
+    DuplexWire, Error, Fragmenter, Frame, IdleBudget, LinkEvent, MessageHeader, MessageId, PeerId,
+    PeerLink, PeerSession, PeerTable, PollOutcome, Pump, PumpEvent, Receiver, RetryPolicy, Sender,
     SessionConfig, SessionState, SessionStats, SliceSink, SliceSource, StreamId, TableError,
     TxState, W8Receiver, W8Sender, WindowedReceiver, WindowedSender, Wire, HEADER_LEN, HELLO_LEN,
+};
+
+#[cfg(feature = "aead")]
+pub use crate::{
+    open, open_from, seal, seal_to, sealed_len, AeadError, KEY_LEN, NONCE_LEN, TAG_LEN,
 };

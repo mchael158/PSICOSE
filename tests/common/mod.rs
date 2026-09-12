@@ -1,11 +1,14 @@
 //! Heapless in-memory duplex used by integration tests. No `Vec`, no threads.
+//!
+//! Crate-level allow: each integration test binary only uses a subset of these
+//! helpers (`hostile` vs `forum` vs `pump`).
 #![allow(dead_code)]
 
 use core::cell::RefCell;
 
 use psicose::{ByteTransport, PollOutcome, Receiver, Sender, TxPoll};
 
-pub const RING: usize = 64;
+const RING: usize = 64;
 
 pub struct Ring {
     buf: [u8; RING],
@@ -109,7 +112,6 @@ pub fn pump_rx<T: ByteTransport>(rx: &mut Receiver<T>, out: &mut [u8], filled: &
     }
 }
 
-#[allow(dead_code)]
 pub fn send_byte_coop<Tx, Rx>(
     sender: &mut Sender<Tx>,
     receiver: &mut Receiver<Rx>,
@@ -138,7 +140,6 @@ pub fn send_byte_coop<Tx, Rx>(
     }
 }
 
-#[allow(dead_code)]
 pub fn start_coop<Tx, Rx>(
     sender: &mut Sender<Tx>,
     receiver: &mut Receiver<Rx>,
@@ -163,7 +164,6 @@ pub fn start_coop<Tx, Rx>(
     }
 }
 
-#[allow(dead_code)]
 pub fn finish_coop<Tx, Rx>(
     sender: &mut Sender<Tx>,
     receiver: &mut Receiver<Rx>,
@@ -188,7 +188,6 @@ pub fn finish_coop<Tx, Rx>(
     }
 }
 
-#[allow(dead_code)]
 pub fn abort_coop<Tx, Rx>(
     sender: &mut Sender<Tx>,
     receiver: &mut Receiver<Rx>,
@@ -213,10 +212,8 @@ pub fn abort_coop<Tx, Rx>(
     }
 }
 
-#[allow(dead_code)]
 pub type Link<'w> = psicose::PeerLink<psicose::DuplexPort<'w>, psicose::DuplexPort<'w>>;
 
-#[allow(dead_code)]
 pub fn established<const N: usize>(
     a: &mut Link<'_>,
     alice: &mut psicose::PeerTable<N>,
@@ -247,7 +244,6 @@ pub fn established<const N: usize>(
     false
 }
 
-#[allow(dead_code)]
 pub fn send<const N: usize>(
     tx: &mut Link<'_>,
     tx_table: &mut psicose::PeerTable<N>,
@@ -276,7 +272,6 @@ pub fn send<const N: usize>(
     inbox.is_complete()
 }
 
-#[allow(dead_code)]
 fn offer<const N: usize>(
     tx: &mut Link<'_>,
     tx_table: &mut psicose::PeerTable<N>,

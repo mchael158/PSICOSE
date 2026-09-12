@@ -8,8 +8,8 @@ use core::cell::RefCell;
 use psicose::error::Error;
 use psicose::rx::PollOutcome;
 use psicose::timeout::RetryPolicy;
-use psicose::tx::TxPoll;
 use psicose::transport::ByteTransport;
+use psicose::tx::TxPoll;
 use psicose::window::{WindowedReceiver, WindowedSender};
 
 use common::{End, Wires};
@@ -85,8 +85,8 @@ fn w8_delivers_in_order_across_wraparound() {
     const K: usize = 300;
     let mut src = [0u8; K];
     let mut out = [0u8; K];
-    for i in 0..K {
-        src[i] = (i % 256) as u8;
+    for (i, b) in src.iter_mut().enumerate() {
+        *b = (i % 256) as u8;
     }
     let n = transfer::<8>(&src, &mut out);
     assert_eq!(n, K);
@@ -109,8 +109,8 @@ fn w4_survives_lost_data_inside_the_window() {
     const K: usize = 16;
     let mut src = [0u8; K];
     let mut out = [0u8; K];
-    for i in 0..K {
-        src[i] = i as u8;
+    for (i, b) in src.iter_mut().enumerate() {
+        *b = i as u8;
     }
 
     let wires = RefCell::new(Wires::new());
@@ -140,10 +140,8 @@ fn w4_survives_lost_data_inside_the_window() {
                 Err(Error::WindowFull) => {}
                 Err(_) => break,
             }
-        } else if !finish_offered {
-            if sender.offer_finish().is_ok() {
-                finish_offered = true;
-            }
+        } else if !finish_offered && sender.offer_finish().is_ok() {
+            finish_offered = true;
         }
         match sender.poll() {
             Ok(TxPoll::TransferDone) => break,

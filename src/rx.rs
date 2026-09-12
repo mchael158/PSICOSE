@@ -315,7 +315,10 @@ impl<T: ByteTransport> Receiver<T> {
         let expected = self.expected_seq.current();
 
         if frame.seq() == expected {
-            self.begin_reply(&Frame::ack(expected), PendingAction::Deliver(frame.payload()));
+            self.begin_reply(
+                &Frame::ack(expected),
+                PendingAction::Deliver(frame.payload()),
+            );
             return Ok(());
         }
 
@@ -352,7 +355,7 @@ mod tests {
 
     #[test]
     fn delivers_in_order_byte_and_acks_it() {
-        let incoming = Frame::data_frame(0, 0x42).to_bytes();
+        let incoming = Frame::data(0, 0x42).to_bytes();
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
 
@@ -385,7 +388,7 @@ mod tests {
 
     #[test]
     fn pending_when_frame_incomplete() {
-        let bytes = Frame::data_frame(0, 1).to_bytes();
+        let bytes = Frame::data(0, 1).to_bytes();
         let transport = MockTransport::with_incoming(&bytes[..2]);
         let mut rx = Receiver::new(transport);
 
@@ -397,24 +400,26 @@ mod tests {
     #[test]
     fn duplicate_retransmission_is_reacked_not_redelivered() {
         let incoming = crate::test_support::concat2(
-            Frame::data_frame(0, 0xAA).to_bytes(),
-            Frame::data_frame(0, 0xAA).to_bytes(),
+            Frame::data(0, 0xAA).to_bytes(),
+            Frame::data(0, 0xAA).to_bytes(),
         );
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xAA)
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xAA))
+        );
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::DuplicateIgnored
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::DuplicateIgnored)
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 
     #[test]
     fn corrupted_frame_triggers_nack_and_propagates_error() {
-        let mut bytes = Frame::data_frame(0, 1).to_bytes();
+        let mut bytes = Frame::data(0, 1).to_bytes();
         bytes[2] ^= 0xFF;
         let transport = MockTransport::with_incoming(&bytes);
         let mut rx = Receiver::new(transport);
@@ -434,8 +439,14 @@ mod tests {
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
 
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x10)));
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x11)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x10))
+        );
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x11))
+        );
         assert_eq!(rx.expected_seq(), 2);
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Started));
         assert_eq!(rx.expected_seq(), 0);
@@ -450,7 +461,10 @@ mod tests {
         );
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
 
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x10)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x10))
+        );
         assert_eq!(rx.expected_seq(), 1);
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Rejected));
         assert_eq!(rx.state(), RxState::Idle);
@@ -463,27 +477,28 @@ mod tests {
         let mut rx = Receiver::new(transport);
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::TransferFinished
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
         assert_eq!(rx.state(), RxState::Finished);
         assert_eq!(rx.transport.written(), Frame::ack(0).to_bytes());
     }
 
     #[test]
     fn duplicate_finish_is_reacked_not_an_error() {
-        let incoming = crate::test_support::concat2(
-            Frame::finish(0).to_bytes(),
-            Frame::finish(0).to_bytes(),
-        );
+        let incoming =
+            crate::test_support::concat2(Frame::finish(0).to_bytes(), Frame::finish(0).to_bytes());
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::TransferFinished
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::TransferFinished
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
         assert_eq!(
             rx.transport.written(),
             crate::test_support::concat2(Frame::ack(0).to_bytes(), Frame::ack(0).to_bytes())
@@ -500,8 +515,9 @@ mod tests {
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::TransferFinished
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
         for _ in 0..8 {
             assert_eq!(rx.poll(), Ok(PollOutcome::Pending));
         }
@@ -518,8 +534,9 @@ mod tests {
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::TransferFinished
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
         for _ in 0..8 {
             assert_eq!(rx.poll(), Ok(PollOutcome::Pending));
         }
@@ -537,70 +554,82 @@ mod tests {
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::TransferFinished
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::TransferFinished)
+        );
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Started));
         assert_eq!(rx.expected_seq(), 0);
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xAB)
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xAB))
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 
     #[test]
     fn reordered_data_is_rejected_and_not_delivered() {
         let incoming = crate::test_support::concat3(
-            Frame::data_frame(0, 0x10).to_bytes(),
-            Frame::data_frame(2, 0x12).to_bytes(),
-            Frame::data_frame(1, 0x11).to_bytes(),
+            Frame::data(0, 0x10).to_bytes(),
+            Frame::data(2, 0x12).to_bytes(),
+            Frame::data(1, 0x11).to_bytes(),
         );
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
 
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x10)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x10))
+        );
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Rejected));
         assert_eq!(rx.expected_seq(), 1);
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x11)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x11))
+        );
         assert_eq!(rx.expected_seq(), 2);
     }
 
     #[test]
     fn wraparound_duplicate_of_255_is_not_redelivered() {
         let incoming = crate::test_support::concat2(
-            Frame::data_frame(255, 0xFE).to_bytes(),
-            Frame::data_frame(0, 0x00).to_bytes(),
+            Frame::data(255, 0xFE).to_bytes(),
+            Frame::data(0, 0x00).to_bytes(),
         );
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
         rx.set_expected_seq(0);
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::DuplicateIgnored
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::DuplicateIgnored)
+        );
         assert_eq!(rx.expected_seq(), 0);
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x00)
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x00))
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 
     #[test]
     fn wraparound_255_then_0_delivers_both() {
         let incoming = crate::test_support::concat2(
-            Frame::data_frame(255, 0xFE).to_bytes(),
-            Frame::data_frame(0, 0x00).to_bytes(),
+            Frame::data(255, 0xFE).to_bytes(),
+            Frame::data(0, 0x00).to_bytes(),
         );
         let transport = MockTransport::with_incoming(&incoming);
         let mut rx = Receiver::new(transport);
         rx.set_expected_seq(255);
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xFE)
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xFE))
+        );
         assert_eq!(rx.expected_seq(), 0);
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x00)
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x00))
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 
@@ -630,10 +659,8 @@ mod tests {
 
     #[test]
     fn abort_after_finish_is_ignored() {
-        let incoming = crate::test_support::concat2(
-            Frame::finish(0).to_bytes(),
-            Frame::abort().to_bytes(),
-        );
+        let incoming =
+            crate::test_support::concat2(Frame::finish(0).to_bytes(), Frame::abort().to_bytes());
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
         assert_eq!(
             poll_until_settled(&mut rx),
@@ -657,16 +684,17 @@ mod tests {
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Started));
         assert_eq!(rx.expected_seq(), 0);
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xAB)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xAB))
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 
     #[test]
     fn duplicate_abort_is_reacked() {
-        let incoming = crate::test_support::concat2(
-            Frame::abort().to_bytes(),
-            Frame::abort().to_bytes(),
-        );
+        let incoming =
+            crate::test_support::concat2(Frame::abort().to_bytes(), Frame::abort().to_bytes());
         let mut rx = Receiver::new(MockTransport::with_incoming(&incoming));
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));
         assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Aborted));

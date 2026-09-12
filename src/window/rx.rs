@@ -41,7 +41,7 @@ pub struct WindowedReceiver<T: ByteTransport, const N: usize> {
 impl<T: ByteTransport, const N: usize> WindowedReceiver<T, N> {
     /// Expects the first DATA at seq `0`.
     pub fn new(transport: T) -> Self {
-        let () = check_window::<N>();
+        check_window::<N>();
         WindowedReceiver {
             transport,
             expected_seq: Sequence::new(),
@@ -376,7 +376,10 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(
             &Frame::data(0, 0x42).to_bytes(),
         ));
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x42)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x42))
+        );
         assert_eq!(rx.expected_seq(), 1);
         assert_eq!(rx.transport.written(), Frame::ack(0).to_bytes());
     }
@@ -390,8 +393,9 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
 
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xB0)
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xB0))
+        );
         assert_eq!(rx.poll(), Ok(PollOutcome::Delivered(0xB1)));
         assert_eq!(rx.expected_seq(), 2);
         assert_eq!(
@@ -407,10 +411,14 @@ mod tests {
             Frame::data(0, 0xAA).to_bytes(),
         );
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xAA)));
         assert_eq!(
-            poll_until_settled(&mut rx), Ok(PollOutcome::DuplicateIgnored
-        ));
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xAA))
+        );
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::DuplicateIgnored)
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 
@@ -445,9 +453,15 @@ mod tests {
         let mut rx = WindowedReceiver::<_, 4>::new(MockTransport::with_incoming(&incoming));
         // Force expected to 255 without exposing a setter on the windowed type.
         rx.expected_seq = Sequence::from_raw(255);
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0xFE)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0xFE))
+        );
         assert_eq!(rx.expected_seq(), 0);
-        assert_eq!(poll_until_settled(&mut rx), Ok(PollOutcome::Delivered(0x00)));
+        assert_eq!(
+            poll_until_settled(&mut rx),
+            Ok(PollOutcome::Delivered(0x00))
+        );
         assert_eq!(rx.expected_seq(), 1);
     }
 }

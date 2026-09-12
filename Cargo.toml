@@ -1,12 +1,13 @@
 [package]
 name = "psicose"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 description = "no_std, heapless reliable byte transport: 1-byte payload, 4-byte frame, stop-and-wait and windowed (N ≤ 8)."
 readme = "README.md"
 documentation = "https://docs.rs/psicose"
+homepage = "https://github.com/mchael158/PSICOSE"
 repository = "https://github.com/mchael158/PSICOSE"
 keywords = ["no_std", "embedded", "protocol", "transport", "heapless"]
 categories = ["embedded", "no-std", "network-programming"]
@@ -18,22 +19,57 @@ include = [
     "LICENSE-APACHE",
     "README.md",
     "README.pt-BR.md",
-    "PROTOCOL.md",
-    "PROTOCOL.pt-BR.md",
+    "docs/**",
     "CHANGELOG.md",
     "examples/**",
 ]
+# `examples/common/link.rs` is a shared harness (`mod link`), not a demo.
+autoexamples = false
 
 [package.metadata.docs.rs]
 all-features = true
-rustdoc-args = ["--generate-link-to-definition"]
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+    "--generate-link-to-definition",
+]
 
 [lib]
 name = "psicose"
 path = "src/lib.rs"
 
+[[example]]
+name = "jpeg_over_uart"
+path = "examples/jpeg_over_uart.rs"
+
+[[example]]
+name = "firmware_flash"
+path = "examples/firmware_flash.rs"
+
+[[example]]
+name = "sensor_telemetry"
+path = "examples/sensor_telemetry.rs"
+
+[[example]]
+name = "radio_windowed"
+path = "examples/radio_windowed.rs"
+
+[[example]]
+name = "forum"
+path = "examples/forum.rs"
+
+[[test]]
+name = "aead_stack"
+path = "tests/aead_stack.rs"
+required-features = ["aead"]
+
 [features]
 default = []
+# ChaCha20-Poly1305 (RFC 8439) above the transport. Core stays zero-deps.
+aead = ["dep:chacha20poly1305", "dep:zeroize"]
 
 [dependencies]
-# Intentionally empty. No allocator, no runtime, no async.
+# Core: intentionally empty of required deps.
+chacha20poly1305 = { version = "0.10.1", optional = true, default-features = false }
+# MSRV 1.75: zeroize 1.9+ needs edition2024 / newer Cargo.
+zeroize = { version = ">=1.5, <1.9", optional = true, default-features = false }

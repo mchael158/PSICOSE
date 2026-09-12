@@ -11,7 +11,7 @@
 //!
 //! Run: `cargo run --example radio_windowed`
 
-#[path = "link.rs"]
+#[path = "common/link.rs"]
 mod link;
 
 use core::cell::RefCell;

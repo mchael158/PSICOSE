@@ -1,33 +1,18 @@
 //! # PSICOSE-1B
 //!
-//! A `no_std`, heapless, deterministic, byte-oriented transport protocol.
-//! The **payload** is exactly one byte; the **frame** is always four.
+//! A `no_std`, heapless crate: reliable byte transport + optional P2P +
+//! optional AEAD. You compose the layers; nothing allocates.
 //!
 //! ```text
-//!                     APPLICATION
-//!                          │
-//!                          ▼
-//!                  ┌────────────────┐
-//!                  │  byte source   │
-//!                  └────────┬───────┘
-//!                           │ byte by byte
-//!                           ▼
-//!                 ┌──────────────────┐
-//!                 │  PSICOSE-1B      │
-//!                 │  tx::Sender      │
-//!                 └────────┬─────────┘
-//!                          │
-//!                   ┌──────┴──────┐
-//!                   │             │
-//!                  DATA        ACK/NACK
-//!                   │             │
-//!                   └──────┬──────┘
-//!                          ▼
-//!                   ByteTransport
-//!                          │
-//!            ┌─────────────┼─────────────┐
-//!            ▼             ▼             ▼
-//!          UART           SPI           RADIO
+//! application bytes
+//!        │
+//!        ├─ optional: aead::seal_to  (feature = "aead")
+//!        ├─ optional: Fragmenter / Defragmenter
+//!        ▼
+//! PeerLink / Pump / Sender|Receiver|Windowed*
+//!        │  DATA 1 byte/frame + CRC-8 + ACK
+//!        ▼
+//! ByteTransport  (UART / SPI / radio — you implement)
 //! ```
 //!
 //! ## Non-negotiable properties
@@ -41,27 +26,17 @@
 //!   (`N ≤ 8` in flight) pair. The protocol never owns the file — only
 //!   the window of payload bytes currently on the wire.
 //! - **The wire frame is fixed at [`protocol::FRAME_LEN`] = 4 bytes:**
-//!   `TYPE(1) | SEQ(1) | DATA(1) | CRC(1)`. `DATA` is always exactly one
-//!   byte, by design — see the module docs on [`protocol::frame`] for why.
-//! - **Reliability is the protocol's job, not the application's.** ACK,
-//!   NACK, sequence numbers, CRC-8, and tick-based retransmission are all
-//!   handled by [`tx::Sender`] / [`rx::Receiver`] so the application only
-//!   ever sees clean, in-order bytes.
+//!   `TYPE(1) | SEQ(1) | DATA(1) | CRC(1)`.
+//! - **Reliability is the protocol's job.** ACK, NACK, SEQ, CRC-8, and
+//!   tick-based retransmission live in [`tx`] / [`rx`] / [`pump`].
 //!
-//! ## Any data, not just frames
+//! Start with [`prelude`]. Spec: `docs/PROTOCOL.md`.
 //!
-//! The 4-byte [`Frame`] is the **envelope**, not the application type.
-//! JPEG, a file, flash, a sensor sample, or `struct` bytes all become a
-//! [`ByteSource`]. PSICOSE never sees the type — only the next byte.
-//! [`stream`] drains a source and rebuilds it on a [`ByteSink`].
-//! [`Pump`] interleaves TX and RX without an internal loop.
+//! ## Threat model (short)
 //!
-//! ## P2P above the transport
-//!
-//! The [`p2p`] module adds identity ([`PeerId`]), sessions ([`PeerSession`]),
-//! a compile-time table ([`PeerTable`]), a live [`PeerLink`], and streams
-//! ([`StreamId`], [`Fragmenter`]) — all as **payload bytes**. Start from
-//! [`prelude`]: `Wire::new().pumps()`.
+//! CRC-8 detects accidental corruption. It does not authenticate. Enable
+//! feature `aead` and call [`aead::seal_to`] / [`aead::open_from`] on
+//! application messages **before** they enter the transport.
 //!
 //! ## Minimal example
 //!
@@ -94,29 +69,16 @@
 //! assert_eq!(alice.established(), 1);
 //! assert_eq!(bob.established(), 1);
 //! ```
-//!
-//! ## What's here vs. what's next
-//!
-//! This is **0.2.3**: stop-and-wait (1B),
-//! selective-repeat [`window`] (`N ≤ 8`), [`stream`], cooperative
-//! [`Pump`] / [`SessionStats`], `ABORT` on the same 4-byte frame, and
-//! [`p2p`] (`PeerId` / [`PeerSession`] / [`PeerTable`] / [`PeerLink`] /
-//! [`StreamId`] / [`Fragmenter`]) as payload bytes only.
-//! File and UART/SPI stay out — you implement [`ByteSource`] on top of
-//! them. Runnable stand-ins live in `examples/` (`jpeg_over_uart`,
-//! `firmware_flash`, `sensor_telemetry`, `radio_windowed`, `forum`). The formal
-//! wire spec ships as `PROTOCOL.md` (English) and `PROTOCOL.pt-BR.md`
-//! in the crate.
-//!
-//! **Payload is 1 byte. The frame is 4 bytes.** `DATA` is the only
-//! application bit; `TYPE|SEQ|CRC` are overhead (25% before ACKs, 12.5%
-//! stop-and-wait). [`actors`] schedules N receivers on one thread.
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 
 pub mod actors;
+#[cfg(feature = "aead")]
+#[cfg_attr(docsrs, doc(cfg(feature = "aead")))]
+pub mod aead;
 pub mod error;
 pub mod fault;
 pub mod p2p;
@@ -130,6 +92,12 @@ pub mod transport;
 pub mod tx;
 pub mod window;
 
+#[cfg(feature = "aead")]
+#[cfg_attr(docsrs, doc(cfg(feature = "aead")))]
+#[doc(inline)]
+pub use aead::{
+    open, open_from, seal, seal_to, sealed_len, AeadError, KEY_LEN, NONCE_LEN, TAG_LEN,
+};
 #[doc(inline)]
 pub use error::Error;
 #[doc(inline)]
@@ -141,8 +109,7 @@ pub use p2p::{
 };
 #[doc(inline)]
 pub use protocol::{
-    crc8, Frame, FrameAssembler, FrameError, FrameType, Sequence, CRC8_POLY, FRAME_LEN,
-    PAYLOAD_LEN,
+    crc8, Frame, FrameAssembler, FrameError, FrameType, Sequence, CRC8_POLY, FRAME_LEN, PAYLOAD_LEN,
 };
 #[doc(inline)]
 pub use pump::{Pump, PumpEvent, SessionStats};
@@ -150,17 +117,18 @@ pub use pump::{Pump, PumpEvent, SessionStats};
 pub use rx::{PollOutcome, Receiver, RxState};
 #[doc(inline)]
 pub use stream::{
-    recv_all, recv_all_windowed, recv_bytes, send_all, send_all_windowed, send_bytes, SliceFull,
-    SliceSink, SliceSource, StreamError,
+    recv_all, recv_all_budgeted, recv_all_windowed, recv_all_windowed_budgeted, recv_bytes,
+    send_all, send_all_windowed, send_all_windowed_budgeted, send_bytes, SliceFull, SliceSink,
+    SliceSource, StreamError,
 };
 #[doc(inline)]
-pub use timeout::RetryPolicy;
+pub use timeout::{IdleBudget, RetryPolicy};
 #[doc(inline)]
 pub use transport::{ByteSink, ByteSource, ByteTransport};
 #[doc(inline)]
 pub use tx::{Sender, TxPoll, TxState};
 #[doc(inline)]
-pub use window::{WindowedReceiver, WindowedSender, MAX_WINDOW, W8Receiver, W8Sender};
+pub use window::{W8Receiver, W8Sender, WindowedReceiver, WindowedSender, MAX_WINDOW};
 
 #[cfg(test)]
 mod test_support;

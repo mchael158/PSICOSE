@@ -134,7 +134,14 @@ impl DuplexWire {
     }
 
     /// Four ports: A's TX, A's RX, B's TX, B's RX.
-    pub fn ends(&self) -> (DuplexPort<'_>, DuplexPort<'_>, DuplexPort<'_>, DuplexPort<'_>) {
+    pub fn ends(
+        &self,
+    ) -> (
+        DuplexPort<'_>,
+        DuplexPort<'_>,
+        DuplexPort<'_>,
+        DuplexPort<'_>,
+    ) {
         (
             DuplexPort {
                 wire: self,
@@ -160,7 +167,12 @@ impl DuplexWire {
     }
 
     /// Two pumps, default retry policy: `let (a, b) = wire.pumps();`
-    pub fn pumps(&self) -> (Pump<DuplexPort<'_>, DuplexPort<'_>>, Pump<DuplexPort<'_>, DuplexPort<'_>>) {
+    pub fn pumps(
+        &self,
+    ) -> (
+        Pump<DuplexPort<'_>, DuplexPort<'_>>,
+        Pump<DuplexPort<'_>, DuplexPort<'_>>,
+    ) {
         let (a_tx, a_rx, b_tx, b_rx) = self.ends();
         (Pump::on(a_tx, a_rx), Pump::on(b_tx, b_rx))
     }
@@ -169,7 +181,10 @@ impl DuplexWire {
     pub fn pumps_with(
         &self,
         policy: RetryPolicy,
-    ) -> (Pump<DuplexPort<'_>, DuplexPort<'_>>, Pump<DuplexPort<'_>, DuplexPort<'_>>) {
+    ) -> (
+        Pump<DuplexPort<'_>, DuplexPort<'_>>,
+        Pump<DuplexPort<'_>, DuplexPort<'_>>,
+    ) {
         let (a_tx, a_rx, b_tx, b_rx) = self.ends();
         (
             Pump::on_with(a_tx, a_rx, policy),

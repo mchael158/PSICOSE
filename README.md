@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/psicose.svg)](https://crates.io/crates/psicose)
 [![docs.rs](https://docs.rs/psicose/badge.svg)](https://docs.rs/psicose)
+[![CI](https://github.com/mchael158/PSICOSE/actions/workflows/ci.yml/badge.svg)](https://github.com/mchael158/PSICOSE/actions/workflows/ci.yml)
 [![license](https://img.shields.io/crates/l/psicose.svg)](https://crates.io/crates/psicose)
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md)
@@ -23,13 +24,16 @@ Best-case efficiency before ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK):
 
 ```toml
 [dependencies]
-psicose = "0.2"
+psicose = "0.3"
+# Optional authenticated encryption above the transport:
+# psicose = { version = "0.3", features = ["aead"] }
 ```
 
-No features, no dependencies. MSRV: Rust 1.75 (`rust-toolchain.toml`).
+Default build: **no features, no dependencies.** Optional feature `aead`
+adds ChaCha20-Poly1305 (RFC 8439). MSRV: Rust 1.75 (`rust-toolchain.toml`).
 
-Docs: [docs.rs/psicose](https://docs.rs/psicose) · spec: [`PROTOCOL.md`](PROTOCOL.md)
-([pt-BR](PROTOCOL.pt-BR.md))
+Docs: [docs.rs/psicose](https://docs.rs/psicose) · spec: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
+([pt-BR](docs/PROTOCOL.pt-BR.md))
 
 ## Why
 
@@ -37,7 +41,10 @@ Most transfer protocols hold the whole message in memory. PSICOSE never
 does: it moves one payload byte at a time. Memory is a few frames on the
 stack, whether you send 4 bytes of config or a 4 GB file.
 
-## Status (0.2.3 — experimental)
+## Status (0.3 — usable transport)
+
+Reliable byte transport for embedded links. CRC-8 is **noise detection**,
+not authentication — enable `aead` when the link may be adversarial.
 
 - **protocol** — CRC-8, 4-byte frame, semantic validation, `SEQ`
   wraparound (`255 → 0`), assembler, `OutBuf` (one wire byte per poll).
@@ -62,26 +69,19 @@ Not yet: routing / gossip / store-and-forward, UART/SPI/CAN/radio,
 ## Layers
 
 ```text
-                    APPLICATION
-                         │
-              ┌──────────▼──────────┐
-              │         p2p         │
-              │ PeerId / Session    │
-              │ Stream / Message    │
-              └──────────┬──────────┘
-                         │ payload bytes
-              ┌──────────▼──────────┐
-              │      transport      │
-              │  TYPE|SEQ|DATA|CRC  │
-              │  START/FINISH/ABORT │
-              │  Pump / Stats       │
-              └──────────┬──────────┘
-                         │
-                   ByteTransport
+ application bytes
+        │
+        ├─ optional: aead::seal_to / open_from   (feature = "aead")
+        ├─ optional: Fragmenter / Defragmenter
+        ▼
+ PeerLink / Pump / Sender|Receiver|Windowed*
+        │  DATA 1 byte/frame + CRC-8 + ACK
+        ▼
+ ByteTransport  (you implement: UART / SPI / radio)
 ```
 
-The transport does not know what a peer or a forum post is. The P2P
-layer does not grow the 4-byte frame.
+Compose the layers yourself. Capabilities bits announce intent; they do
+not auto-switch `PeerLink` to windowed or AEAD.
 
 ## API
 
@@ -93,11 +93,13 @@ use psicose::prelude::*;
 | --- | --- |
 | `PeerId::from_label(b"alice")` | 8-byte identity (padded). Never in the 4-byte frame. |
 | `PeerTable::<4>::new(id)` | Neighbors, `1 ≤ N ≤ 8`. Default: window 8 + `STREAM`. |
-| `PeerTable::with(id, SessionConfig::FORUM)` | Same table, A↔B hello (`STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION`). |
-| `StreamId::FORUM` / `MessageId::new(1)` | Application conversation. Not `SEQ`. Not a forum. |
-| `Fragmenter` / `Defragmenter` | Cut any blob; rebuild it into a stack buffer. |
+| `PeerTable::with(id, SessionConfig::FORUM)` | Hello: `STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION`. |
+| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (announce AEAD; still call `seal_to` yourself). |
+| `StreamId::FORUM` / `MessageId::new(1)` | Application conversation. Not `SEQ`. |
+| `Fragmenter` / `Defragmenter` | Cut any blob; rebuild into a stack buffer. |
+| `seal_to` / `open_from` | Feature `aead`: ciphertext ‖ tag above the transport. |
 | `SessionConfig::offer(4, features)` | Hello config. Version is `PROTOCOL_VERSION`. |
-| `Capabilities::STREAM \| Capabilities::WINDOW` | Feature bits. CRC is not negotiated. |
+| `Capabilities::*` | Announcements only. CRC is not negotiated. |
 | `Wire::new().pumps()` | In-memory A↔B. ACK/NACK → TX, DATA/START/FINISH/ABORT → RX. |
 | `Pump::on(tx, rx)` | Same wrapping on a UART / SPI / radio. |
 | `PeerLink::connect` / `accept` | START + 12-byte hello both ways. |

@@ -78,6 +78,6 @@ mod tests {
     fn differs_from_identity() {
         // Sanity: CRC of nonzero data should not be trivially the last byte
         // or a simple XOR, which would indicate a broken shift/poly.
-        assert_ne!(crc8(&[0xFF, 0x00, 0x00]), 0xFF ^ 0x00 ^ 0x00);
+        assert_ne!(crc8(&[0xFF, 0x00, 0x00]), 0xFF);
     }
 }

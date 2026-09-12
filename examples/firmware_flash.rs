@@ -11,7 +11,7 @@
 //!
 //! Run: `cargo run --example firmware_flash`
 
-#[path = "link.rs"]
+#[path = "common/link.rs"]
 mod link;
 
 use std::fs::File;

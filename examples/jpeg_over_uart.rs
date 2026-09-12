@@ -11,7 +11,7 @@
 //!
 //! Run: `cargo run --example jpeg_over_uart`
 
-#[path = "link.rs"]
+#[path = "common/link.rs"]
 mod link;
 
 use psicose::{SliceSink, SliceSource};

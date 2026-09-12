@@ -487,7 +487,7 @@ mod tests {
                 j += 1;
             }
         }
-        assert_eq!(inbox.is_complete(), true);
+        assert!(inbox.is_complete());
         assert_eq!(inbox.stream(), Some(StreamId::FORUM));
         assert_eq!(inbox.message(), Some(MessageId::new(42)));
         assert_eq!(inbox.as_slice(), post);

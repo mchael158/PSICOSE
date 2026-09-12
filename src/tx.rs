@@ -205,7 +205,10 @@ impl<T: ByteTransport> Sender<T> {
         if matches!(self.state, TxState::Aborted) && self.inflight.is_none() {
             return Ok(());
         }
-        if matches!(self.inflight.as_ref().map(|f| f.kind), Some(FlightKind::Abort)) {
+        if matches!(
+            self.inflight.as_ref().map(|f| f.kind),
+            Some(FlightKind::Abort)
+        ) {
             return Ok(());
         }
         self.inflight = None;
@@ -494,7 +497,10 @@ mod tests {
         assert_eq!(sender.send_byte(0x11), Ok(()));
         assert_eq!(
             sender.transport.written(),
-            concat2(Frame::data(0, 0x11).to_bytes(), Frame::data(0, 0x11).to_bytes())
+            concat2(
+                Frame::data(0, 0x11).to_bytes(),
+                Frame::data(0, 0x11).to_bytes()
+            )
         );
     }
 

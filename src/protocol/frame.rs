@@ -24,8 +24,8 @@ pub const PAYLOAD_LEN: usize = 1;
 /// Total size in bytes of a serialized frame. Fixed and known at compile time.
 pub const FRAME_LEN: usize = 4;
 
-const _: () = assert!(PAYLOAD_LEN == 1);
-const _: () = assert!(FRAME_LEN == 4);
+const _: [(); 1] = [(); PAYLOAD_LEN];
+const _: [(); 4] = [(); FRAME_LEN];
 
 /// The role a frame plays on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,11 +106,6 @@ impl Frame {
         Frame::raw(FrameType::Data, seq, byte)
     }
 
-    /// Alias of [`Frame::data`].
-    pub const fn data_frame(seq: u8, data: u8) -> Self {
-        Frame::data(seq, data)
-    }
-
     /// ACK for `seq`. `DATA` is 0.
     pub const fn ack(seq: u8) -> Self {
         Frame::raw(FrameType::Ack, seq, 0)
@@ -170,8 +165,7 @@ impl Frame {
 
     /// Parses a 4-byte wire representation: TYPE, then CRC, then semantics.
     pub fn from_bytes(bytes: [u8; FRAME_LEN]) -> Result<Self, FrameError> {
-        let frame_type =
-            FrameType::from_u8(bytes[0]).ok_or(FrameError::InvalidType(bytes[0]))?;
+        let frame_type = FrameType::from_u8(bytes[0]).ok_or(FrameError::InvalidType(bytes[0]))?;
 
         let expected = crc8(&bytes[..3]);
         let got = bytes[3];
@@ -246,9 +240,7 @@ mod tests {
         let header = [FrameType::Ack as u8, 42, 0xFF];
         let crc = crc8(&header);
         let bytes = [header[0], header[1], header[2], crc];
-        assert_eq!(
-            Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics
-        ));
+        assert_eq!(Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics));
     }
 
     #[test]
@@ -256,9 +248,7 @@ mod tests {
         let header = [FrameType::Start as u8, 1, 0];
         let crc = crc8(&header);
         let bytes = [header[0], header[1], header[2], crc];
-        assert_eq!(
-            Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics
-        ));
+        assert_eq!(Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics));
     }
 
     #[test]
@@ -266,10 +256,7 @@ mod tests {
         let header = [FrameType::Abort as u8, 1, 0];
         let crc = crc8(&header);
         let bytes = [header[0], header[1], header[2], crc];
-        assert_eq!(
-            Frame::from_bytes(bytes),
-            Err(FrameError::InvalidSemantics)
-        );
+        assert_eq!(Frame::from_bytes(bytes), Err(FrameError::InvalidSemantics));
     }
 
     #[test]

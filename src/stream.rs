@@ -24,8 +24,9 @@
 
 use crate::error::Error;
 use crate::rx::{PollOutcome, Receiver};
+use crate::timeout::IdleBudget;
 use crate::transport::{ByteSink, ByteSource, ByteTransport};
-use crate::tx::Sender;
+use crate::tx::{Sender, TxPoll};
 use crate::window::{WindowedReceiver, WindowedSender};
 
 /// Error from a source-to-sink transfer: either the link or the
@@ -138,6 +139,9 @@ impl<'a> From<&'a mut [u8]> for SliceSink<'a> {
 /// This path expects ACKs on the sender's own transport (scripted
 /// replies). On a live pair, use [`crate::Pump::send_all`] so RX is
 /// polled in the same cooperative step.
+///
+/// In-flight waits use [`crate::timeout::RetryPolicy`] inside
+/// [`Sender::send_byte`](crate::tx::Sender::send_byte) — not an idle budget.
 pub fn send_all<T, S>(
     tx: &mut Sender<T>,
     src: &mut S,
@@ -148,9 +152,7 @@ where
 {
     let mut n = 0u64;
     loop {
-        let byte = src
-            .read_byte()
-            .map_err(StreamError::Application)?;
+        let byte = src.read_byte().map_err(StreamError::Application)?;
         match byte {
             Some(byte) => {
                 tx.send_byte(byte).map_err(StreamError::Protocol)?;
@@ -173,31 +175,53 @@ where
     T: ByteTransport,
     S: ByteSource,
 {
+    send_all_windowed_budgeted(tx, src, IdleBudget::DEFAULT)
+}
+
+/// [`send_all_windowed`] with an [`IdleBudget`] on the `WindowFull` spin.
+pub fn send_all_windowed_budgeted<T, S, const N: usize>(
+    tx: &mut WindowedSender<T, N>,
+    src: &mut S,
+    mut budget: IdleBudget,
+) -> Result<u64, StreamError<T::Error, S::Error>>
+where
+    T: ByteTransport,
+    S: ByteSource,
+{
     let mut n = 0u64;
     loop {
-        let byte = src
-            .read_byte()
-            .map_err(StreamError::Application)?;
+        let byte = src.read_byte().map_err(StreamError::Application)?;
         match byte {
-            Some(byte) => {
-                loop {
-                    match tx.offer(byte) {
-                        Ok(()) => {
-                            n = n.saturating_add(1);
-                            break;
-                        }
-                        Err(Error::WindowFull) => {
-                            tx.poll().map_err(StreamError::Protocol)?;
-                        }
-                        Err(e) => return Err(StreamError::Protocol(e)),
+            Some(byte) => loop {
+                match tx.offer(byte) {
+                    Ok(()) => {
+                        n = n.saturating_add(1);
+                        budget.reset();
+                        break;
                     }
+                    Err(Error::WindowFull) => match tx.poll().map_err(StreamError::Protocol)? {
+                        TxPoll::Acked => budget.reset(),
+                        TxPoll::Pending => budget.tick().map_err(StreamError::Protocol)?,
+                        TxPoll::Aborted => {
+                            return Err(StreamError::Protocol(Error::Aborted));
+                        }
+                        TxPoll::SessionReady | TxPoll::TransferDone => {
+                            budget.tick().map_err(StreamError::Protocol)?;
+                        }
+                    },
+                    Err(e) => return Err(StreamError::Protocol(e)),
                 }
-            }
+            },
             None => break,
         }
     }
     while tx.outstanding() > 0 {
-        let _ = tx.poll().map_err(StreamError::Protocol)?;
+        match tx.poll().map_err(StreamError::Protocol)? {
+            TxPoll::Acked => budget.reset(),
+            TxPoll::Pending => budget.tick().map_err(StreamError::Protocol)?,
+            TxPoll::Aborted => return Err(StreamError::Protocol(Error::Aborted)),
+            TxPoll::SessionReady | TxPoll::TransferDone => break,
+        }
     }
     tx.send_finish().map_err(StreamError::Protocol)?;
     Ok(n)
@@ -212,22 +236,20 @@ where
     T: ByteTransport,
     K: ByteSink,
 {
-    let mut n = 0u64;
-    loop {
-        match rx.poll().map_err(StreamError::Protocol)? {
-            PollOutcome::Delivered(byte) => {
-                sink.write_byte(byte).map_err(StreamError::Application)?;
-                n = n.saturating_add(1);
-            }
-            PollOutcome::TransferFinished => return Ok(n),
-            PollOutcome::Aborted => return Err(StreamError::Protocol(Error::Aborted)),
-            PollOutcome::Pending
-            | PollOutcome::DuplicateIgnored
-            | PollOutcome::Rejected
-            | PollOutcome::CrcRejected
-            | PollOutcome::Started => {}
-        }
-    }
+    recv_all_budgeted(rx, sink, IdleBudget::DEFAULT)
+}
+
+/// [`recv_all`] with an [`IdleBudget`] so a silent peer cannot hang the loop.
+pub fn recv_all_budgeted<T, K>(
+    rx: &mut Receiver<T>,
+    sink: &mut K,
+    budget: IdleBudget,
+) -> Result<u64, StreamError<T::Error, K::Error>>
+where
+    T: ByteTransport,
+    K: ByteSink,
+{
+    drain_recv(|| rx.poll(), sink, budget)
 }
 
 /// Windowed counterpart of [`recv_all`].
@@ -239,20 +261,46 @@ where
     T: ByteTransport,
     K: ByteSink,
 {
+    recv_all_windowed_budgeted(rx, sink, IdleBudget::DEFAULT)
+}
+
+/// [`recv_all_windowed`] with an [`IdleBudget`].
+pub fn recv_all_windowed_budgeted<T, K, const N: usize>(
+    rx: &mut WindowedReceiver<T, N>,
+    sink: &mut K,
+    budget: IdleBudget,
+) -> Result<u64, StreamError<T::Error, K::Error>>
+where
+    T: ByteTransport,
+    K: ByteSink,
+{
+    drain_recv(|| rx.poll(), sink, budget)
+}
+
+fn drain_recv<E, K, F>(
+    mut poll: F,
+    sink: &mut K,
+    mut budget: IdleBudget,
+) -> Result<u64, StreamError<E, K::Error>>
+where
+    F: FnMut() -> Result<PollOutcome, Error<E>>,
+    K: ByteSink,
+{
     let mut n = 0u64;
     loop {
-        match rx.poll().map_err(StreamError::Protocol)? {
+        match poll().map_err(StreamError::Protocol)? {
             PollOutcome::Delivered(byte) => {
                 sink.write_byte(byte).map_err(StreamError::Application)?;
                 n = n.saturating_add(1);
+                budget.reset();
             }
             PollOutcome::TransferFinished => return Ok(n),
             PollOutcome::Aborted => return Err(StreamError::Protocol(Error::Aborted)),
-            PollOutcome::Pending
+            PollOutcome::Started
             | PollOutcome::DuplicateIgnored
             | PollOutcome::Rejected
-            | PollOutcome::CrcRejected
-            | PollOutcome::Started => {}
+            | PollOutcome::CrcRejected => budget.reset(),
+            PollOutcome::Pending => budget.tick().map_err(StreamError::Protocol)?,
         }
     }
 }
@@ -373,5 +421,16 @@ mod tests {
         let mut sink = SliceSink::new(&mut buf);
         assert_eq!(recv_all_windowed(&mut rx, &mut sink), Ok(2));
         assert_eq!(sink.written(), b"{}");
+    }
+
+    #[test]
+    fn recv_all_budgeted_returns_when_peer_disappears() {
+        let mut rx = Receiver::new(MockTransport::with_incoming(&[]));
+        let mut buf = [0u8; 4];
+        let mut sink = SliceSink::new(&mut buf);
+        assert_eq!(
+            recv_all_budgeted(&mut rx, &mut sink, IdleBudget::new(8)),
+            Err(StreamError::Protocol(Error::IdleBudgetExhausted))
+        );
     }
 }

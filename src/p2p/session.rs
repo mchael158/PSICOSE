@@ -33,6 +33,13 @@ pub const HELLO_LEN: usize = PeerId::LEN + SessionConfig::WIRE_LEN;
 ///
 /// CRC is deliberately **not** a capability: the transport frame always
 /// carries it. Only optional behavior is negotiated.
+///
+/// Bits are **announcements**. They do not switch `PeerLink` internals:
+/// - [`Self::WINDOW`] / [`Self::FRAGMENTATION`]: the app chooses
+///   [`WindowedSender`](crate::WindowedSender) / [`Fragmenter`](crate::Fragmenter).
+/// - [`Self::COMPRESSION`]: reserved (no implementation).
+/// - [`Self::ENCRYPTION`]: with feature `aead`, means peers may use
+///   [`crate::aead`] on application payloads before the transport.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
     bits: u16,
@@ -41,17 +48,18 @@ pub struct Capabilities {
 impl Capabilities {
     /// No optional features.
     pub const NONE: Capabilities = Capabilities { bits: 0 };
-    /// Selective-repeat window (`N ≤ 8`).
+    /// Peer may use selective-repeat (`N ≤ 8`) on its own send path.
     pub const WINDOW: Capabilities = Capabilities { bits: 1 << 0 };
     /// Byte streams over the session.
     pub const STREAM: Capabilities = Capabilities { bits: 1 << 1 };
-    /// Application messages. A bit in the hello, not a forum product.
+    /// Application messages (bit in the hello only).
     pub const FORUM: Capabilities = Capabilities { bits: 1 << 2 };
-    /// Payload compression (above the transport).
+    /// Reserved: advertisement only. No compression is implemented.
     pub const COMPRESSION: Capabilities = Capabilities { bits: 1 << 3 };
-    /// Payload encryption (above the transport).
+    /// With feature `aead`: sealed application payloads via [`crate::aead`].
+    /// Without `aead`: advertisement only.
     pub const ENCRYPTION: Capabilities = Capabilities { bits: 1 << 4 };
-    /// Message fragmentation ([`super::stream::Fragmenter`]).
+    /// Peer may use [`crate::Fragmenter`] on application messages.
     pub const FRAGMENTATION: Capabilities = Capabilities { bits: 1 << 5 };
 
     /// Raw bit set (wire form: big-endian `u16` in the hello).
@@ -121,14 +129,23 @@ impl SessionConfig {
     pub const DEFAULT: SessionConfig =
         SessionConfig::new(PROTOCOL_VERSION, MAX_WINDOW as u8, Capabilities::STREAM);
 
-    /// Window 8 plus stream, window, the app-message bit, and fragmentation.
-    /// Used by the A↔B demo; still not a forum.
+    /// Window 8 plus stream, window, app-message, and fragmentation bits.
     pub const FORUM: SessionConfig = SessionConfig::offer(
         MAX_WINDOW as u8,
         Capabilities::STREAM
             .with(Capabilities::WINDOW)
             .with(Capabilities::FORUM)
             .with(Capabilities::FRAGMENTATION),
+    );
+
+    /// [`Self::FORUM`] plus [`Capabilities::ENCRYPTION`] (announce AEAD).
+    pub const SECURE: SessionConfig = SessionConfig::offer(
+        MAX_WINDOW as u8,
+        Capabilities::STREAM
+            .with(Capabilities::WINDOW)
+            .with(Capabilities::FORUM)
+            .with(Capabilities::FRAGMENTATION)
+            .with(Capabilities::ENCRYPTION),
     );
 
     /// Builds a config, clamping `max_window` into `1..=MAX_WINDOW`.

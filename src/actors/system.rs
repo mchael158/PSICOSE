@@ -92,7 +92,9 @@ impl<A: Actor, const N: usize> System<A, N> {
     /// Immutable view of a spawned actor, including finished ones still
     /// occupying a slot.
     pub fn get(&self, id: ActorId) -> Option<&A> {
-        self.slots.get(id.0).and_then(|s| s.as_ref().map(|s| &s.actor))
+        self.slots
+            .get(id.0)
+            .and_then(|s| s.as_ref().map(|s| &s.actor))
     }
 
     /// Mutable view of a spawned actor.
@@ -279,18 +281,12 @@ mod tests {
             Some(Ok(Tick::Ready(2)))
         );
 
-        assert_eq!(
-            sys.tick().map(|r| r.map(|s| s.tick)),
-            Some(Ok(Tick::Done))
-        );
+        assert_eq!(sys.tick().map(|r| r.map(|s| s.tick)), Some(Ok(Tick::Done)));
         assert_eq!(sys.live(), 1);
 
         assert_eq!(ready(sys.tick()), (1, 3));
         assert_eq!(ready(sys.tick()), (1, 4));
-        assert_eq!(
-            sys.tick().map(|r| r.map(|s| s.tick)),
-            Some(Ok(Tick::Done))
-        );
+        assert_eq!(sys.tick().map(|r| r.map(|s| s.tick)), Some(Ok(Tick::Done)));
         assert!(sys.tick().is_none());
     }
 

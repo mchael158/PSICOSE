@@ -35,8 +35,6 @@ pub mod stream;
 pub mod table;
 
 pub use duplex::{DuplexFull, DuplexPort, DuplexWire};
-/// In-memory duplex. Same type as [`DuplexWire`].
-pub use DuplexWire as Wire;
 pub use link::{LinkError, LinkEvent, PeerLink};
 pub use peer::PeerId;
 pub use session::{
@@ -48,6 +46,8 @@ pub use stream::{
     HEADER_LEN,
 };
 pub use table::{PeerEntry, PeerTable, TableError, MAX_PEERS};
+/// In-memory duplex. Same type as [`DuplexWire`].
+pub use DuplexWire as Wire;
 
 #[cfg(test)]
 mod tests {

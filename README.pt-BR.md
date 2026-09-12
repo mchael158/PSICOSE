@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/psicose.svg)](https://crates.io/crates/psicose)
 [![docs.rs](https://docs.rs/psicose/badge.svg)](https://docs.rs/psicose)
+[![CI](https://github.com/mchael158/PSICOSE/actions/workflows/ci.yml/badge.svg)](https://github.com/mchael158/PSICOSE/actions/workflows/ci.yml)
 [![license](https://img.shields.io/crates/l/psicose.svg)](https://crates.io/crates/psicose)
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md)
@@ -23,13 +24,16 @@ Eficiência máxima antes dos ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK):
 
 ```toml
 [dependencies]
-psicose = "0.2"
+psicose = "0.3"
+# Criptografia autenticada opcional acima do transporte:
+# psicose = { version = "0.3", features = ["aead"] }
 ```
 
-Sem features, sem dependências. MSRV: Rust 1.75 (`rust-toolchain.toml`).
+Build padrão: **sem features, sem dependências.** Feature opcional `aead`
+adiciona ChaCha20-Poly1305 (RFC 8439). MSRV: Rust 1.75 (`rust-toolchain.toml`).
 
 Docs: [docs.rs/psicose](https://docs.rs/psicose) · spec:
-[`PROTOCOL.md`](PROTOCOL.md) ([pt-BR](PROTOCOL.pt-BR.md))
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) ([pt-BR](docs/PROTOCOL.pt-BR.md))
 
 ## Por quê
 
@@ -37,7 +41,10 @@ A maioria dos protocolos segura a mensagem inteira na memória. A PSICOSE
 não: move um byte de payload por vez. A memória é alguns frames na
 stack — 4 bytes de config ou um arquivo de 4 GB.
 
-## Estado (0.2.3 — experimental)
+## Estado (0.3 — transporte utilizável)
+
+Transporte de byte confiável para links embutidos. CRC-8 é **detecção de
+ruído**, não autenticação — use `aead` se o link puder ser adversarial.
 
 - **protocol** — CRC-8, frame de 4 bytes, validação semântica, wraparound
   de `SEQ`, assembler, `OutBuf`.
@@ -61,26 +68,19 @@ Ainda não: roteamento / gossip / store-and-forward, UART/SPI/CAN/rádio,
 ## Camadas
 
 ```text
-                    APLICAÇÃO
-                         │
-              ┌──────────▼──────────┐
-              │         p2p         │
-              │ PeerId / Session    │
-              │ Stream / Message    │
-              └──────────┬──────────┘
-                         │ bytes de payload
-              ┌──────────▼──────────┐
-              │      transporte     │
-              │  TYPE|SEQ|DATA|CRC  │
-              │  START/FINISH/ABORT │
-              │  Pump / Stats       │
-              └──────────┬──────────┘
-                         │
-                   ByteTransport
+ bytes da aplicação
+        │
+        ├─ opcional: aead::seal_to / open_from   (feature = "aead")
+        ├─ opcional: Fragmenter / Defragmenter
+        ▼
+ PeerLink / Pump / Sender|Receiver|Windowed*
+        │  DATA 1 byte/frame + CRC-8 + ACK
+        ▼
+ ByteTransport  (você implementa: UART / SPI / rádio)
 ```
 
-O transporte não sabe o que é peer ou post de fórum. A camada P2P não
-aumenta o frame de 4 bytes.
+Você empilha as camadas. Bits de `Capabilities` anunciam intenção; não
+ligam sozinhos janela ou AEAD no `PeerLink`.
 
 ## API
 
@@ -92,11 +92,13 @@ use psicose::prelude::*;
 | --- | --- |
 | `PeerId::from_label(b"alice")` | Identidade de 8 bytes (com padding). Nunca no frame de 4 bytes. |
 | `PeerTable::<4>::new(id)` | Vizinhos, `1 ≤ N ≤ 8`. Default: janela 8 + `STREAM`. |
-| `PeerTable::with(id, SessionConfig::FORUM)` | Mesma tabela, hello A↔B (`STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION`). |
-| `StreamId::FORUM` / `MessageId::new(1)` | Conversa da aplicação. Não é `SEQ`. Não é um fórum. |
+| `PeerTable::with(id, SessionConfig::FORUM)` | Hello: `STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION`. |
+| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (anuncia AEAD; ainda chama `seal_to`). |
+| `StreamId::FORUM` / `MessageId::new(1)` | Conversa da aplicação. Não é `SEQ`. |
 | `Fragmenter` / `Defragmenter` | Corta qualquer blob; remonta num buffer na stack. |
+| `seal_to` / `open_from` | Feature `aead`: ciphertext ‖ tag acima do transporte. |
 | `SessionConfig::offer(4, features)` | Config do hello. A versão é `PROTOCOL_VERSION`. |
-| `Capabilities::STREAM \| Capabilities::WINDOW` | Bits de feature. CRC não se negocia. |
+| `Capabilities::*` | Só anúncios. CRC não se negocia. |
 | `Wire::new().pumps()` | A↔B na memória. ACK/NACK → TX, DATA/START/FINISH/ABORT → RX. |
 | `Pump::on(tx, rx)` | O mesmo envelopamento num UART / SPI / rádio. |
 | `PeerLink::connect` / `accept` | START + hello de 12 bytes nos dois sentidos. |

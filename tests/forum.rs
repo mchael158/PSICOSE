@@ -24,29 +24,24 @@ fn peers_exchange_bytes_both_ways() {
     };
     let mut b = PeerLink::accept(&bob, pump_b);
 
-    assert_eq!(established(&mut a, &mut alice, &mut b, &mut bob), true);
+    assert!(established(&mut a, &mut alice, &mut b, &mut bob));
 
     let ping = b"ping";
     let mut board = [0u8; 32];
     let mut inbox = Defragmenter::new(&mut board);
     let before = b.pump().stats();
-    assert_eq!(
-        send(&mut a, &mut alice, &mut b, &mut bob, 1, ping, &mut inbox),
-        true
-    );
+    assert!(send(
+        &mut a, &mut alice, &mut b, &mut bob, 1, ping, &mut inbox
+    ));
     assert_eq!(inbox.as_slice(), ping);
     assert_eq!(b.pump().stats().retries, before.retries);
-    assert_eq!(
-        b.pump().stats().bytes_delivered > before.bytes_delivered,
-        true
-    );
+    assert!(b.pump().stats().bytes_delivered > before.bytes_delivered);
 
     let pong = b"pong";
     let before = a.pump().stats();
-    assert_eq!(
-        send(&mut b, &mut bob, &mut a, &mut alice, 2, pong, &mut inbox),
-        true
-    );
+    assert!(send(
+        &mut b, &mut bob, &mut a, &mut alice, 2, pong, &mut inbox
+    ));
     assert_eq!(inbox.as_slice(), pong);
     assert_eq!(a.pump().stats().retries, before.retries);
 }

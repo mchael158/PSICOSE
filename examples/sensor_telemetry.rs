@@ -12,7 +12,7 @@
 //!
 //! Run: `cargo run --example sensor_telemetry`
 
-#[path = "link.rs"]
+#[path = "common/link.rs"]
 mod link;
 
 use psicose::{SliceSink, SliceSource};

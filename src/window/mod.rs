@@ -54,8 +54,14 @@ mod tests {
     fn w8_state_fits_in_a_quarter_kilobyte() {
         let tx = core::mem::size_of::<WindowedSender<Nop, 8>>();
         let rx = core::mem::size_of::<WindowedReceiver<Nop, 8>>();
-        assert!(tx < 256, "W8 sender is {tx} bytes — must stay a register machine");
-        assert!(rx < 256, "W8 receiver is {rx} bytes — must stay a register machine");
+        assert!(
+            tx < 256,
+            "W8 sender is {tx} bytes — must stay a register machine"
+        );
+        assert!(
+            rx < 256,
+            "W8 receiver is {rx} bytes — must stay a register machine"
+        );
     }
 
     #[test]

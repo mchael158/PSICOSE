@@ -139,8 +139,8 @@ fn wraparound_survives_a_dropped_ack_on_seq_255() {
     }
 
     assert_eq!(n, N);
-    for i in 0..N {
-        assert_eq!(received[i], (i % 256) as u8);
+    for (i, byte) in received[..N].iter().enumerate() {
+        assert_eq!(*byte, (i % 256) as u8);
     }
 }
 
@@ -183,10 +183,13 @@ fn delayed_data_is_delivered_once_after_the_hold() {
         },
         policy(),
     );
-    let rx_end = FaultyTransport::on_write(End {
-        wires: &wires,
-        is_a: false,
-    }, FaultPolicy::none())
+    let rx_end = FaultyTransport::on_write(
+        End {
+            wires: &wires,
+            is_a: false,
+        },
+        FaultPolicy::none(),
+    )
     .with_read_hold(8);
     let mut receiver = Receiver::new(rx_end);
 
@@ -310,7 +313,7 @@ fn abort_during_retry_discards_data_and_reopens() {
             break;
         }
     }
-    assert_eq!(saw_retry, true);
+    assert!(saw_retry);
     abort_coop(&mut sender, &mut receiver, &mut received, &mut n);
     assert_eq!(sender.state(), TxState::Aborted);
 
@@ -343,7 +346,7 @@ fn abort_after_finish_is_ignored() {
     {
         let mut w = wires.borrow_mut();
         for b in Frame::abort().to_bytes() {
-            assert_eq!(w.a_to_b.push(b), true);
+            assert!(w.a_to_b.push(b));
         }
     }
     let mut i = 0usize;

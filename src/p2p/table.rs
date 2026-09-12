@@ -1,9 +1,7 @@
 //! Compile-time peer directory. No `Vec`. One slot per neighbor.
 
 use super::peer::PeerId;
-use super::session::{
-    HandshakeError, PeerSession, SessionConfig, SessionState, HELLO_LEN,
-};
+use super::session::{HandshakeError, PeerSession, SessionConfig, SessionState, HELLO_LEN};
 
 /// Hard ceiling. Bigger is still heapless; we refuse a core table that
 /// looks like a routing daemon.
@@ -69,7 +67,7 @@ impl<const N: usize> PeerTable<N> {
 
     /// An empty table for `local`, offering `config` on every connect.
     pub const fn with(local: PeerId, config: SessionConfig) -> Self {
-        let () = check_peers::<N>();
+        check_peers::<N>();
         PeerTable {
             local,
             config,
@@ -103,6 +101,11 @@ impl<const N: usize> PeerTable<N> {
             i += 1;
         }
         n
+    }
+
+    /// True when no slot is occupied.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// True when every slot is taken.
@@ -190,11 +193,7 @@ impl<const N: usize> PeerTable<N> {
     }
 
     /// Completes an outgoing connect when the peer's hello arrives.
-    pub fn finish_connect(
-        &mut self,
-        slot: usize,
-        hello: &[u8],
-    ) -> Result<(), TableError> {
+    pub fn finish_connect(&mut self, slot: usize, hello: &[u8]) -> Result<(), TableError> {
         if self.get(slot).is_none() {
             return Err(TableError::Empty);
         }
@@ -309,6 +308,9 @@ mod tests {
     #[test]
     fn table_of_eight_stays_small() {
         let size = core::mem::size_of::<PeerTable<8>>();
-        assert!(size <= 640, "PeerTable<8> is {size} bytes — keep it a register file");
+        assert!(
+            size <= 640,
+            "PeerTable<8> is {size} bytes — keep it a register file"
+        );
     }
 }
