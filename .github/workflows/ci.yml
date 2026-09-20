@@ -20,18 +20,38 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo clippy --all-targets --features aead -- -D warnings
-      - run: cargo clippy --all-targets --features embedded-io -- -D warnings
       - run: cargo test
-      - run: cargo test --features aead
-      - run: cargo test --features embedded-io
       - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --no-deps
       - run: cargo run --example jpeg_over_uart
       - run: cargo run --example firmware_flash
       - run: cargo run --example sensor_telemetry
       - run: cargo run --example radio_windowed
       - run: cargo run --example ab_direct
       - run: cargo run --example p2p_pair
+      - run: cargo run --example tcp_pair
+
+  esp32-check:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install esp toolchain (best effort)
+        run: |
+          if ! command -v espup >/dev/null 2>&1; then
+            cargo install espup --locked || true
+          fi
+          if command -v espup >/dev/null 2>&1; then
+            espup install
+            . $HOME/export-esp.sh || true
+          fi
+      - name: cargo check esp32 boards
+        run: |
+          if rustup target list --installed | grep -q xtensa-esp32-none-elf; then
+            cargo check -p esp32-uart --target xtensa-esp32-none-elf --manifest-path boards/Cargo.toml
+            cargo check -p esp32-wifi --target xtensa-esp32-none-elf --manifest-path boards/Cargo.toml
+          else
+            echo "xtensa-esp32-none-elf not installed — skip (see boards/*/README.md)"
+          fi

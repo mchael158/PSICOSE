@@ -29,28 +29,48 @@ Best-case efficiency before ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK): 1/8 = 12.
 
 ```toml
 [dependencies]
-psicose = "0.3"
-# Optional authenticated encryption above the transport:
-# psicose = { version = "0.3", features = ["aead"] }
-# UART/SPI via embedded-io 0.6:
-# psicose = { version = "0.3", features = ["embedded-io"] }
+psicose = "0.3"   # zero dependencies — API is only psicose::…
 ```
 
 | | |
 | --- | --- |
-| Default build | **framework core (incl. P2P), zero dependencies** |
-| Optional | `aead`, `embedded-io` (0.6 — MSRV 1.75) |
+| Dependencies | **none** (always) |
 | MSRV | Rust 1.75 |
 | Safety | `#![no_std]` · `#![forbid(unsafe_code)]` · no heap |
 | Docs | [docs.rs/psicose](https://docs.rs/psicose/latest/psicose/) |
 | Spec | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) · [pt-BR](docs/PROTOCOL.pt-BR.md) |
 | API map | [`docs/API.md`](docs/API.md) · [pt-BR](docs/API.pt-BR.md) |
+| Hardware | [`docs/HARDWARE.md`](docs/HARDWARE.md) · [pt-BR](docs/HARDWARE.pt-BR.md) |
 
-## Try in 30 seconds
+## On hardware (ESP32)
+
+```text
+UART1 → your ByteTransport → LinkFace → Pump / Node
+Wi‑Fi TCP → TcpPipe / TcpStream → LinkFace → Pump / Node
+```
+
+Concrete firmware (not published):
+
+- UART: [`boards/esp32-uart`](boards/esp32-uart/) — TX=GPIO17, RX=GPIO16 @ 115200
+- Wi‑Fi/TCP: [`boards/esp32-wifi`](boards/esp32-wifi/) — STA + DHCP + TCP → PSICOSE
+
+`esp-hal` / `esp-radio` live **only** in those board packages.
+
+```sh
+cd boards && cargo run -p esp32-uart
+# or: cd boards && cargo run -p esp32-wifi   # needs SSID/PASSWORD/HOST
+```
+
+Host TCP smoke (no board): `cargo run --example tcp_pair`.
+
+`Wire` is an **in-memory test harness**, not the on-wire frame.
+
+## Try in 30 seconds (host)
 
 ```sh
 cargo run --example ab_direct    # motor: Wire::copy
 cargo run --example p2p_pair     # motor: Node + PeerLink
+cargo run --example tcp_pair     # motor: TCP + LinkFace
 cargo run --example jpeg_over_uart
 cargo test
 ```
@@ -60,7 +80,7 @@ cargo test
 - UART / SPI / radio where RAM is scarce and you cannot buffer the whole message
 - Firmware flash, camera JPEG, sensor samples, EEPROM dumps — anything as bytes
 - You want stop-and-wait or selective-repeat (`N ≤ 8`) with CRC + retry on the stack
-- Optional ChaCha20-Poly1305 (`aead`) when the link may be adversarial
+- Optional app-level crypto **outside** psicose when the link may be adversarial
 
 ## When not to use
 
@@ -75,11 +95,11 @@ memory is a few frames on the stack whether you send 4 bytes of config or a
 multi-gigabyte file. Reliability (ACK, NACK, SEQ, CRC-8, tick retry) is the
 protocol's job — not yours.
 
-CRC-8 is **noise detection**, not authentication. Enable feature `aead` and
-call `seal_to` / `open_from` when an attacker may be on the wire. See
+CRC-8 is **noise detection**, not authentication. Seal messages in **your**
+application before the transport if an attacker may be on the wire. See
 [`SECURITY.md`](SECURITY.md).
 
-## Status (0.3 — usable)
+## Status (0.4 — usable)
 
 - **protocol** — CRC-8, 4-byte frame, `SEQ` wraparound, assembler
 - **tx / rx** — stop-and-wait; `START` / `FINISH` / `ABORT` wait for ACK
@@ -87,34 +107,33 @@ call `seal_to` / `open_from` when an attacker may be on the wire. See
 - **window** — selective-repeat `1 ≤ N ≤ 8` (`W8Sender` / `W8Receiver`)
 - **stream** — `SliceSource` / `SliceSink`, `send_all` / `recv_all`
 - **p2p** — `Node`, `PeerLink`, hello, fragmentation (`prelude`)
-- **aead** (optional) — ChaCha20-Poly1305 above the transport
-- **embedded-io** (optional) — `IoTransport` / `IoSource` / `IoSink` from
-  `embedded-io` 0.6 (`Read` + `Write` + `ReadReady`)
+- **LinkFace** — demux one physical port into Pump TX/RX (hardware path)
+- **dependencies** — **none**
 
-Not in this crate: concrete UART/SPI drivers, `File`, routing / gossip.
+Not in this crate: SoC HALs (`esp-hal` lives in `boards/`), `File`, routing / gossip, crypto.
 
 ## Layers (one framework)
 
 ```text
- exemplos / application
+ exemplos / application / boards/esp32-uart | boards/esp32-wifi
         │
         ▼
  psicose::Node                              ← motor entry
         ├─ PeerLink / PeerTable / hello
         ├─ Fragmenter / Defragmenter
-        ├─ optional aead::seal_to / open_from
         ▼
- Wire::copy / Pump / WindowedPump
+ LinkFace / Wire::copy / Pump / WindowedPump
         │  DATA 1 byte/frame + CRC-8 + ACK
         ▼
  ByteTransport
-        ├─ you implement (UART / SPI / radio)
-        └─ or IoTransport::new(port)           (feature = "embedded-io")
+        ├─ you implement on UART / SPI / radio
+        └─ Wire                            (in-memory test harness only)
 ```
 
-Use only the transport (`Wire::copy` / `Pump`) or climb to P2P (`Node`) —
-same crate, same frame. `Capabilities::WINDOW` is honoured by `PeerLink`
-after hello.
+Use hardware (`LinkFace` + your `ByteTransport`) or climb to P2P (`Node`) —
+same crate, same frame. `Wire` is for host tests. `Capabilities::WINDOW`
+is honoured by `PeerLink` after hello.
+
 
 ## API sketch
 
@@ -127,13 +146,12 @@ use psicose::prelude::*;
 | `PeerId::from_label(b"alice")` | 8-byte identity (padded). Never in the 4-byte frame. |
 | `Node::<4>::new(id)` | Framework entry: identity + neighbor table. |
 | `Node::with(id, SessionConfig::FORUM)` | Hello: stream + window + forum + fragmentation. |
-| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (still call `seal_to` yourself). |
+| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (advertise app crypto; seal yourself). |
 | `Fragmenter` / `Defragmenter` | Cut any blob; rebuild into a stack buffer. |
-| `seal_to` / `open_from` | Feature `aead`: ciphertext ‖ tag above the transport. |
-| `Wire::new().copy(src, sink)` | Motor stop-and-wait A→B (examples use this). |
+| `Wire::new().copy(src, sink)` | Host harness stop-and-wait A→B (tests). |
+| `LinkFace::new(port).pump()` | Hardware: demux one UART into Pump ends. |
 | `Wire::new().link_pumps()` | In-memory A↔B for `PeerLink` (windowed). |
 | `Pump::on(tx, rx)` | Same wrapping on a real UART / SPI / radio. |
-| `IoTransport::new(port)` | Feature `embedded-io`: wrap `Read+Write+ReadReady`. |
 | `node.connect` / `node.accept` | START + 12-byte hello both ways. |
 | `establish` / `send_message` | Cooperative helpers inside the crate. |
 

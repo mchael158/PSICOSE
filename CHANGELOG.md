@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-20
+
+### Breaking
+- **Zero dependencies, always.** Removed optional features `aead` and
+  `embedded-io` (and their crates). `use psicose::…` is only PSICOSE
+  types. Implement [`ByteTransport`] on your UART; use [`LinkFace`] for
+  demux. Crypto stays in the application if needed.
+- Removed `IoTransport` / `IoSource` / `IoSink` and `seal_to` / `open_from`.
+
+### Features
+- **`LinkFace`** — demux one physical `ByteTransport` into Pump TX/RX
+  ends. Hardware path: UART → your `ByteTransport` → `LinkFace` → `Pump`.
+- **ESP32 board examples** (`publish = false`, workspace `boards/`):
+  - `boards/esp32-uart` — board-local `ByteTransport` over esp-hal UART1
+  - `boards/esp32-wifi` — Wi‑Fi STA / scan / DHCP / TCP → `TcpPipe` →
+    `LinkFace` / `Pump` (`esp-radio` + Embassy stay out of psicose)
+  - Shared pins in `boards/Cargo.toml`: esp-hal **1.1.2**, esp-radio **0.18**,
+    MSRV **1.88** (separate from host MSRV 1.75)
+- Host example `tcp_pair` — same TCP + `LinkFace` pattern without a board
+  (`--listen` / `--connect` for ESP32 lab).
+- Docs: `docs/HARDWARE.md` (+ pt-BR), PROTOCOL §8.2, README hardware-first.
+- CI job `esp32-check` (optional / `continue-on-error`).
+
 ## 0.3.1 — 2026-09-12
 
 ### Features

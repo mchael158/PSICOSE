@@ -1,15 +1,8 @@
 //! In-memory stand-in for a UART / SPI / radio.
 //!
 //! Each example is a single thread. The "wire" is two heapless rings.
-//! Swap `End` for a real UART driver in the field — the rest stays.
-//!
-//! On hardware that already speaks `embedded-io` 0.6, enable feature
-//! `embedded-io` and replace `End` with:
-//!
-//! ```ignore
-//! use psicose::{IoTransport, Pump};
-//! let mut pump = Pump::on(IoTransport::new(uart_tx), IoTransport::new(uart_rx));
-//! ```
+//! On hardware, implement [`psicose::ByteTransport`] on your UART and
+//! wrap with [`psicose::LinkFace`] — the rest stays the same.
 //!
 //! Shared harness for sibling examples (`#[path = "common/link.rs"]`).
 //! Not a runnable demo — each example uses only a subset of these helpers.

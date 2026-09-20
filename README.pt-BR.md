@@ -28,28 +28,48 @@ Eficiência máxima antes dos ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK): 1/8 = 1
 
 ```toml
 [dependencies]
-psicose = "0.3"
-# Criptografia autenticada opcional acima do transporte:
-# psicose = { version = "0.3", features = ["aead"] }
-# UART/SPI via embedded-io 0.6:
-# psicose = { version = "0.3", features = ["embedded-io"] }
+psicose = "0.3"   # zero dependências — API só psicose::…
 ```
 
 | | |
 | --- | --- |
-| Build padrão | **framework core (incl. P2P), zero dependências** |
-| Opcional | `aead`, `embedded-io` (0.6 — MSRV 1.75) |
+| Dependências | **nenhuma** (sempre) |
 | MSRV | Rust 1.75 |
 | Segurança | `#![no_std]` · `#![forbid(unsafe_code)]` · sem heap |
 | Docs | [docs.rs/psicose](https://docs.rs/psicose/latest/psicose/) |
 | Spec | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) · [pt-BR](docs/PROTOCOL.pt-BR.md) |
 | Mapa da API | [`docs/API.md`](docs/API.md) · [pt-BR](docs/API.pt-BR.md) |
+| Hardware | [`docs/HARDWARE.md`](docs/HARDWARE.md) · [pt-BR](docs/HARDWARE.pt-BR.md) |
 
-## Experimente em 30 segundos
+## No hardware (ESP32)
+
+```text
+UART1 → seu ByteTransport → LinkFace → Pump / Node
+Wi‑Fi TCP → TcpPipe / TcpStream → LinkFace → Pump / Node
+```
+
+Firmware de exemplo (não publicado):
+
+- UART: [`boards/esp32-uart`](boards/esp32-uart/) — TX=GPIO17, RX=GPIO16 @ 115200
+- Wi‑Fi/TCP: [`boards/esp32-wifi`](boards/esp32-wifi/) — STA + DHCP + TCP → PSICOSE
+
+`esp-hal` / `esp-radio` vivem **só** nesses pacotes de board.
+
+```sh
+cd boards && cargo run -p esp32-uart
+# ou: cd boards && cargo run -p esp32-wifi   # precisa SSID/PASSWORD/HOST
+```
+
+Smoke TCP no host (sem placa): `cargo run --example tcp_pair`.
+
+`Wire` é **harness de teste em memória**, não o frame no fio.
+
+## Experimente em 30 segundos (host)
 
 ```sh
 cargo run --example ab_direct    # motor: Wire::copy
 cargo run --example p2p_pair     # motor: Node + PeerLink
+cargo run --example tcp_pair     # motor: TCP + LinkFace
 cargo run --example jpeg_over_uart
 cargo test
 ```
@@ -59,7 +79,7 @@ cargo test
 - UART / SPI / rádio com pouca RAM — sem bufferar a mensagem inteira
 - Flash de firmware, JPEG de câmera, telemetria, dump de EEPROM
 - Stop-and-wait ou selective-repeat (`N ≤ 8`) com CRC + retry na stack
-- ChaCha20-Poly1305 opcional (`aead`) se o link puder ser adversarial
+- Cripto opcional **fora** da psicose se o link puder ser adversarial
 
 ## Quando não usar
 
@@ -73,10 +93,10 @@ A maioria dos stacks segura a mensagem inteira na memória. A PSICOSE não:
 a memória é alguns frames na stack, sejam 4 bytes de config ou um arquivo
 enorme. Confiabilidade (ACK, NACK, SEQ, CRC-8, retry) é do protocolo.
 
-CRC-8 é **detecção de ruído**, não autenticação. Com feature `aead`, use
-`seal_to` / `open_from` se houver atacante no fio. Veja [`SECURITY.md`](SECURITY.md).
+CRC-8 é **detecção de ruído**, não autenticação. Sele mensagens na **sua**
+aplicação antes do transporte se houver atacante no fio. Veja [`SECURITY.md`](SECURITY.md).
 
-## Estado (0.3 — utilizável)
+## Estado (0.4 — utilizável)
 
 - **protocol** — CRC-8, frame 4 bytes, wraparound de `SEQ`, assembler
 - **tx / rx** — stop-and-wait; `START` / `FINISH` / `ABORT` esperam ACK
@@ -84,34 +104,32 @@ CRC-8 é **detecção de ruído**, não autenticação. Com feature `aead`, use
 - **window** — selective-repeat `1 ≤ N ≤ 8`
 - **stream** — `SliceSource` / `SliceSink`, `send_all` / `recv_all`
 - **p2p** — `Node`, `PeerLink`, hello, fragmentação (`prelude`)
-- **aead** (opcional) — ChaCha20-Poly1305 acima do transporte
-- **embedded-io** (opcional) — `IoTransport` / `IoSource` / `IoSink` a
-  partir de `embedded-io` 0.6
+- **LinkFace** — demux de uma porta física em TX/RX do Pump (caminho hardware)
+- **dependências** — **nenhuma**
 
-Fora da crate: drivers UART/SPI concretos, `File`, roteamento / gossip.
+Fora da crate: HALs de SoC (`esp-hal` fica em `boards/`), `File`, roteamento / gossip, cripto.
 
 ## Camadas (um framework)
 
 ```text
- exemplos / aplicação
+ exemplos / aplicação / boards/esp32-uart | boards/esp32-wifi
         │
         ▼
  psicose::Node                              ← entrada do motor
         ├─ PeerLink / PeerTable / hello
         ├─ Fragmenter / Defragmenter
-        ├─ opcional aead::seal_to / open_from
         ▼
- Wire::copy / Pump / WindowedPump
+ LinkFace / Wire::copy / Pump / WindowedPump
         │  DATA 1 byte/frame + CRC-8 + ACK
         ▼
  ByteTransport
-        ├─ você implementa (UART / SPI / rádio)
-        └─ ou IoTransport::new(port)            (feature = "embedded-io")
+        ├─ você implementa no UART / SPI / rádio
+        └─ Wire                             (só harness de teste)
 ```
 
-Só transporte (`Wire::copy` / `Pump`) ou sobe para P2P (`Node`) — mesma
-crate, mesmo frame. `Capabilities::WINDOW` é honrado pelo `PeerLink`
-após o hello.
+Hardware (`LinkFace` + seu `ByteTransport`) ou P2P (`Node`) — mesma crate,
+mesmo frame. `Wire` é para testes no host. `Capabilities::WINDOW` é honrado
+pelo `PeerLink` após o hello.
 
 ## API (resumo)
 
@@ -124,13 +142,12 @@ use psicose::prelude::*;
 | `PeerId::from_label(b"alice")` | Identidade 8 bytes. Nunca no frame de 4. |
 | `Node::<4>::new(id)` | Entrada do framework: identidade + tabela. |
 | `Node::with(id, SessionConfig::FORUM)` | Hello com bits de app. |
-| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (ainda chama `seal_to`). |
+| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (anuncia cripto da app; você sela). |
 | `Fragmenter` / `Defragmenter` | Corta / remonta blob na stack. |
-| `seal_to` / `open_from` | Feature `aead`. |
-| `Wire::new().copy(src, sink)` | Motor stop-and-wait A→B. |
+| `Wire::new().copy(src, sink)` | Harness host stop-and-wait A→B (testes). |
+| `LinkFace::new(port).pump()` | Hardware: demux de um UART nos extremos do Pump. |
 | `Wire::new().link_pumps()` | A↔B em memória para `PeerLink` (janelado). |
 | `Pump::on(tx, rx)` | Mesmo envelopamento no hardware. |
-| `IoTransport::new(port)` | Feature `embedded-io`. |
 | `node.connect` / `node.accept` | START + hello 12 bytes. |
 | `establish` / `send_message` | Helpers cooperativos **dentro** da crate. |
 

@@ -1,22 +1,19 @@
 //! The names you write: `use psicose::prelude::*;`
 //!
-//! Full catalog (every root export + what it does): `docs/API.md` /
-//! `docs/API.pt-BR.md`.
+//! **Only PSICOSE types** — this crate has zero dependencies.
+//! Full catalog: `docs/API.md` / `docs/API.pt-BR.md`.
 //!
 //! ## Included here
 //!
 //! | Group | Names |
 //! | --- | --- |
-//! | Motor | [`Node`], [`Wire`], [`establish`], [`send_message`] |
+//! | Motor | [`Node`], [`Wire`], [`LinkFace`], [`establish`], [`send_message`] |
 //! | P2P | [`PeerId`], [`PeerLink`], [`PeerTable`], [`PeerSession`], … |
 //! | Session | [`SessionConfig`], [`SessionState`], [`Capabilities`] |
 //! | Messages | [`Fragmenter`], [`Defragmenter`], [`MessageId`], [`StreamId`], … |
 //! | Transport | [`Pump`], [`WindowedPump`], [`ByteTransport`], [`Sender`], … |
 //! | Bytes | [`SliceSource`], [`SliceSink`], [`Frame`], [`IdleBudget`], … |
 //! | Errors | [`Error`], [`WireCopyError`], [`TableError`], [`LinkEvent`], … |
-//!
-//! Feature `aead` also reexports seal/open helpers. Feature `embedded-io`
-//! reexports [`IoTransport`] / [`IoSource`] / [`IoSink`].
 //!
 //! ```
 //! use psicose::prelude::*;
@@ -37,17 +34,10 @@
 
 pub use crate::{
     establish, send_message, ByteSink, ByteSource, ByteTransport, Capabilities, DefragError,
-    Defragmenter, DuplexPort, DuplexWire, Error, Fragmenter, Frame, IdleBudget, LinkEvent,
-    MessageHeader, MessageId, Node, PeerId, PeerLink, PeerSession, PeerTable, PollOutcome, Pump,
-    PumpEvent, Receiver, RetryPolicy, Sender, SessionConfig, SessionState, SessionStats, SliceSink,
-    SliceSource, StreamId, TableError, TxState, W8Receiver, W8Sender, WindowedPump,
-    WindowedReceiver, WindowedSender, Wire, WireCopyError, HEADER_LEN, HELLO_LEN,
+    Defragmenter, DuplexPort, DuplexWire, Error, FaceError, FaceRx, FaceTx, Fragmenter, Frame,
+    IdleBudget, LinkEvent, LinkFace, MessageHeader, MessageId, Node, PeerId, PeerLink, PeerSession,
+    PeerTable, PollOutcome, Pump, PumpEvent, Receiver, RetryPolicy, Sender, SessionConfig,
+    SessionState, SessionStats, SliceSink, SliceSource, StreamId, TableError, TxState, W8Receiver,
+    W8Sender, WindowedPump, WindowedReceiver, WindowedSender, Wire, WireCopyError, HEADER_LEN,
+    HELLO_LEN,
 };
-
-#[cfg(feature = "aead")]
-pub use crate::{
-    open, open_from, seal, seal_to, sealed_len, AeadError, KEY_LEN, NONCE_LEN, TAG_LEN,
-};
-
-#[cfg(feature = "embedded-io")]
-pub use crate::{IoSink, IoSource, IoTransport};

@@ -7,9 +7,9 @@ O código em `src/` é a implementação. Se os dois divergirem, o teste
 adversarial em `tests/hostile.rs` decide.
 
 **Estado:** transporte de byte confiável mais camada P2P no mesmo frame
-de 4 bytes. Entrada do framework: `psicose::Node`. Feature `aead`
-adiciona ChaCha20-Poly1305 **acima** do transporte. Mapa nome a nome da
-API: [API.pt-BR.md](API.pt-BR.md) (English: [API.md](API.md)).
+de 4 bytes. Entrada do framework: `psicose::Node`. A crate tem **zero
+dependências**. Mapa da API: [API.pt-BR.md](API.pt-BR.md). Hardware:
+[HARDWARE.pt-BR.md](HARDWARE.pt-BR.md).
 
 ## Modelo de ameaça
 
@@ -18,7 +18,7 @@ API: [API.pt-BR.md](API.pt-BR.md) (English: [API.md](API.md)).
 | Detectar erros acidentais de bit no frame | CRC-8 sobre `TYPE‖SEQ‖DATA` |
 | Entregar bytes em ordem, no máximo uma vez | SEQ + ACK/NACK + retransmissão |
 | Limitar hang com peer silencioso | `RetryPolicy` (por frame) + `IdleBudget` (loops externos) |
-| Confidencialidade / autenticidade vs atacante ativo | **Não** é o CRC. Feature `aead` (`psicose::aead`) nas mensagens da aplicação |
+| Confidencialidade / autenticidade vs atacante ativo | **Não** é o CRC. Sele na **aplicação**, fora da psicose |
 
 Um adversário que injeta ou altera bytes no link pode forjar um frame
 com CRC válido. Trate o CRC só como proteção contra ruído.
@@ -358,17 +358,21 @@ JPEG  Arquivo  Flash  Sensor  firmware.bin  [u8] de um struct
 
 `File` é uma implementação. A crate core não a inclui.
 
-### 8.1 Feature `embedded-io` (opcional)
+### 8.1 Porta física e `LinkFace`
 
-Não faz parte do formato no fio. Adaptadores em
-`psicose::transport::embedded_io`:
+`Pump::on(tx, rx)` precisa de dois `ByteTransport`. Um UART real tem um
+fluxo RX. Implemente `ByteTransport` no seu tipo HAL (sem crates de
+adapter na psicose) e envolva com `LinkFace`, que demultiplexa frames
+completos (ACK/NACK → extremo TX; o resto → extremo RX).
 
-- `IoTransport` — `embedded_io::{Read, Write, ReadReady}` → `ByteTransport`
-  → `Pump::on` / `WindowedPump::on`
-- `IoSource` / `IoSink` — `ByteSource` / `ByteSink` da aplicação
+```text
+seu UART ByteTransport → LinkFace::split() → Pump::on(FaceTx, FaceRx)
+```
 
-Fixado em **embedded-io 0.6** (MSRV 1.75). Sem a feature, implemente
-`ByteTransport` você mesmo (como os examples em memória).
+Testes A↔B em memória continuam com `Wire` (`DuplexWire`). Exemplos de
+board: `boards/esp32-uart` (UART) e `boards/esp32-wifi` (TCP sobre Wi‑Fi).
+Smoke TCP no host: `cargo run --example tcp_pair`. Guia:
+`docs/HARDWARE.pt-BR.md`.
 
 ## 9. Memória de nó (futuro PSICOSE-8)
 
@@ -462,13 +466,12 @@ CRC **não** é capability. O frame de transporte sempre o carrega.
 | 1 | `STREAM` | Streams lógicos sobre a sessão |
 | 2 | `FORUM` | Mensagens da aplicação (não é um fórum) |
 | 3 | `COMPRESSION` | **Reservado.** Só anúncio; sem compressão em 0.3.x |
-| 4 | `ENCRYPTION` | Com feature `aead`: ChaCha20-Poly1305 acima do transporte. Sem `aead`: só anúncio |
+| 4 | `ENCRYPTION` | Só anúncio: peers podem selar payloads **fora** da psicose |
 | 5 | `FRAGMENTATION` | Fragmentação de mensagem (`Fragmenter`) |
 
-`COMPRESSION` não altera o payload no fio. `ENCRYPTION` só tem sentido
-quando os dois peers compilam com `aead` e selam os dados da aplicação
-antes de oferecer bytes à PSICOSE. Bits desconhecidos ficam como estão
-e morrem na interseção com um peer que não os liga.
+`COMPRESSION` não altera o payload no fio. `ENCRYPTION` não cifra nada
+por si — sele na aplicação se precisar. Bits desconhecidos ficam como
+estão e morrem na interseção com um peer que não os liga.
 
 A negociação é determinística e não tem rodada extra: versão mínima,
 janela mínima, interseção dos bits. Os dois lados computam o mesmo

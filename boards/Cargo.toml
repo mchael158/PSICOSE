@@ -1,0 +1,44 @@
+# Board firmware workspace (ESP32 classic).
+#
+# Kept separate from the root `psicose` workspace so host CI can stay on
+# rustc 1.75 while boards use the esp-hal 1.1 / esp-radio 0.18 stack (MSRV 1.88).
+#
+# Build from here:
+#   cd boards
+#   cargo run -p esp32-uart
+#   cargo run -p esp32-wifi
+
+[workspace]
+resolver = "2"
+members = ["esp32-uart", "esp32-wifi"]
+default-members = ["esp32-uart"]
+
+[workspace.dependencies]
+psicose = { path = ".." }
+critical-section = "1.2.0"
+static_cell = "2.1.1"
+
+# Coherent set for rustc ≥ 1.88 (do not mix with esp-hal 1.2 / esp-radio 1.0-beta
+# — those need rustc ≥ 1.95).
+esp-hal = { version = "1.1.2", features = ["esp32", "unstable"] }
+esp-backtrace = { version = "0.19.0", features = ["esp32", "panic-handler", "println"] }
+esp-println = { version = "0.17.0", features = ["esp32"] }
+
+esp-alloc = { version = "0.10.0", features = ["esp32"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32"] }
+esp-rtos = { version = "0.3.0", features = ["embassy", "esp-alloc", "esp-radio", "esp32"] }
+esp-radio = { version = "0.18.0", features = ["esp-alloc", "esp32", "unstable", "wifi"] }
+
+embassy-executor = { version = "0.10.0", features = [] }
+embassy-time = "0.5.0"
+embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "tcp"] }
+embedded-io-async = "0.7.0"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "s"
+
+[profile.dev]
+opt-level = "s"

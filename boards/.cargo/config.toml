@@ -1,0 +1,12 @@
+[build]
+target = "xtensa-esp32-none-elf"
+
+[target.xtensa-esp32-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+]
+
+# Required: no prebuilt `core` for Xtensa on crates.io targets.
+[unstable]
+build-std = ["core", "alloc"]

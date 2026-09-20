@@ -40,8 +40,8 @@ pub const HELLO_LEN: usize = PeerId::LEN + SessionConfig::WIRE_LEN;
 ///   `N ≤ 8`). Outside P2P, the app may also use [`WindowedSender`](crate::WindowedSender).
 /// - [`Self::FRAGMENTATION`]: the app chooses [`Fragmenter`](crate::Fragmenter).
 /// - [`Self::COMPRESSION`]: reserved (no implementation).
-/// - [`Self::ENCRYPTION`]: with feature `aead`, means peers may use
-///   [`crate::aead`] on application payloads before the transport.
+/// - [`Self::ENCRYPTION`]: peers may seal application payloads **outside**
+///   this crate before the transport (advertisement bit only).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
     bits: u16,
@@ -59,8 +59,7 @@ impl Capabilities {
     pub const FORUM: Capabilities = Capabilities { bits: 1 << 2 };
     /// Reserved: advertisement only. No compression is implemented.
     pub const COMPRESSION: Capabilities = Capabilities { bits: 1 << 3 };
-    /// With feature `aead`: sealed application payloads via [`crate::aead`].
-    /// Without `aead`: advertisement only.
+    /// Peers may seal application payloads outside this crate (advertisement).
     pub const ENCRYPTION: Capabilities = Capabilities { bits: 1 << 4 };
     /// Peer may use [`crate::Fragmenter`] on application messages.
     pub const FRAGMENTATION: Capabilities = Capabilities { bits: 1 << 5 };
@@ -141,7 +140,7 @@ impl SessionConfig {
             .with(Capabilities::FRAGMENTATION),
     );
 
-    /// [`Self::FORUM`] plus [`Capabilities::ENCRYPTION`] (announce AEAD).
+    /// [`Self::FORUM`] plus [`Capabilities::ENCRYPTION`] (announce app-level crypto).
     pub const SECURE: SessionConfig = SessionConfig::offer(
         MAX_WINDOW as u8,
         Capabilities::STREAM

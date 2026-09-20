@@ -1,39 +1,28 @@
 # Security
 
-## Threat model
+## What PSICOSE guarantees
 
-PSICOSE is a **reliable** byte transport, not a secure channel by default.
+| Guarantee | Mechanism |
+| --- | --- |
+| Detect accidental bit errors on a frame | CRC-8 on `TYPE‖SEQ‖DATA` |
+| Deliver payload bytes in order, at most once | SEQ + ACK/NACK + retransmit |
+| Bound hangs on a silent peer | `RetryPolicy` + `IdleBudget` |
 
-| Mechanism | Protects against | Does **not** protect against |
-| --- | --- | --- |
-| CRC-8 on the 4-byte frame | Accidental bit errors / noise | Forgery, injection, replay, eavesdropping |
-| ACK / SEQ / retry | Loss and reordering on a cooperative link | A malicious peer that speaks the protocol |
-| Feature `aead` (`seal_to` / `open_from`) | Tampering and (with secrecy) eavesdropping of **application** payloads | Misused nonces, leaked keys, traffic analysis of frame timing |
+CRC-8 is **noise detection**, not authentication. An adversary who can
+inject or modify bytes on the link can forge a CRC-valid frame.
 
-The 4-byte wire frame is unchanged when `aead` is enabled. You seal
-application messages **before** they enter `Fragmenter` / `PeerLink` /
-`Pump`.
+## What PSICOSE does **not** provide
 
-## Using `aead` correctly
+Confidentiality and authenticity are **outside** this crate. The public
+API is only `psicose::…` types with **zero** crypto dependencies.
 
-- Use a **unique nonce per key** for the lifetime of that key (never reuse).
-- Prefer a distinct key per direction or per peer pair when possible.
-- Put stable context in AAD when useful (`PeerId`, `MessageId`, version).
-- On `open` / `open_from` failure, treat the buffer as untrusted junk.
+If the link may be adversarial, seal application messages **before** they
+enter `Pump` / `PeerLink` / `LinkFace`, using a crypto library of your
+choice in **your** firmware — not inside psicose.
 
-This crate does **not** implement key exchange, certificates, or HKDF.
-You supply key and nonce material from your own provisioning story.
+`Capabilities::ENCRYPTION` / `SessionConfig::SECURE` are **advertisement
+bits** in the hello only; they do not encrypt anything by themselves.
 
-## Reporting a vulnerability
+## Reporting
 
-Please **do not** open a public GitHub issue for security bugs.
-
-Email the maintainer listed on [crates.io/crates/psicose](https://crates.io/crates/psicose)
-(or the commit author on this repository) with:
-
-1. Affected version(s)
-2. Description and impact
-3. Proof of concept if available
-
-We aim to acknowledge reports promptly and coordinate a fix before any
-public disclosure.
+See the repository security policy / open an issue privately if needed.

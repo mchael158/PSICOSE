@@ -1,0 +1,12 @@
+# ESP32 classic (Xtensa) needs the esp-rs toolchain from `espup` — stock
+# stable/nightly rustc cannot target `xtensa-esp32-none-elf`.
+#
+#   cargo install espup --locked
+#   espup install
+#   . $HOME/export-esp.ps1   # PowerShell, once per shell
+#
+# Root psicose stays on 1.75 via the repo-root rust-toolchain.toml.
+[toolchain]
+channel = "esp"
+components = ["rust-src"]
+targets = ["xtensa-esp32-none-elf"]

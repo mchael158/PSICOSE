@@ -1,10 +1,10 @@
 [package]
 name = "psicose"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
-description = "no_std heapless framework: 4-byte frame, ACK/CRC, window N≤8, P2P Node/PeerLink; optional AEAD and embedded-io"
+description = "no_std heapless reliable link motor: 4-byte frame, ACK/CRC, window N≤8, P2P Node/PeerLink, LinkFace — zero crate dependencies"
 readme = "README.md"
 documentation = "https://docs.rs/psicose"
 homepage = "https://github.com/mchael158/PSICOSE"
@@ -29,7 +29,6 @@ include = [
 autoexamples = false
 
 [package.metadata.docs.rs]
-all-features = true
 rustdoc-args = [
     "--cfg",
     "docsrs",
@@ -64,21 +63,16 @@ path = "examples/ab_direct.rs"
 name = "p2p_pair"
 path = "examples/p2p_pair.rs"
 
-[[test]]
-name = "aead_stack"
-path = "tests/aead_stack.rs"
-required-features = ["aead"]
-
-[features]
-default = []
-# ChaCha20-Poly1305 (RFC 8439) above the transport. Core stays zero-deps.
-aead = ["dep:chacha20poly1305", "dep:zeroize"]
-# Adapters from embedded-io 0.6 (MSRV 1.75). 0.7 needs rustc 1.81+.
-embedded-io = ["dep:embedded-io"]
+[[example]]
+name = "tcp_pair"
+path = "examples/tcp_pair.rs"
 
 [dependencies]
-# Core: intentionally empty of required deps.
-chacha20poly1305 = { version = "0.10.1", optional = true, default-features = false }
-# MSRV 1.75: zeroize 1.9+ needs edition2024 / newer Cargo.
-zeroize = { version = ">=1.5, <1.9", optional = true, default-features = false }
-embedded-io = { version = "0.6.1", optional = true, default-features = false }
+# Intentionally empty. `use psicose::…` never pulls another crate.
+
+# Host crate only (MSRV 1.75). Board packages live in `boards/` — their own
+# workspace — so esp-hal / edition2024 do not break `cargo test` on 1.75.
+[workspace]
+resolver = "2"
+members = ["."]
+exclude = ["boards"]

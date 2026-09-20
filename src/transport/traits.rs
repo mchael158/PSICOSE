@@ -15,11 +15,11 @@
 ///
 /// # How to get an implementation
 ///
-/// - **Tests / examples:** in-memory rings (`Wire`, `examples/common/link.rs`).
-/// - **Hardware with `embedded-io` 0.6:** enable feature `embedded-io` and
-///   wrap the port with [`crate::IoTransport`] — then pass it to
-///   [`crate::Pump::on`].
-/// - **Anything else:** implement this trait on your UART/SPI/radio type.
+/// - **Tests / host examples:** in-memory [`crate::Wire`].
+/// - **Hardware:** implement this trait on your UART/SPI/radio, then wrap
+///   with [`crate::LinkFace`] so TX and RX do not steal frames; pass the
+///   split ends to [`crate::Pump::on`].
+/// - No adapter crates — only types from `psicose`.
 ///
 /// [`read_byte`]: ByteTransport::read_byte
 pub trait ByteTransport {

@@ -28,7 +28,7 @@ use super::table::{PeerTable, TableError};
 ///
 /// Owns the [`PeerTable`] (who we are + neighbors). Opens
 /// [`PeerLink`]s on pumps that already speak the PSICOSE
-/// wire ([`super::Wire::link_pumps`], UART via [`crate::IoTransport`], etc.).
+/// wire ([`super::Wire::link_pumps`], or [`crate::LinkFace`] on UART).
 ///
 /// # Example
 ///

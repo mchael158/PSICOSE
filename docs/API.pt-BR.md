@@ -14,24 +14,21 @@ use psicose::Node;                 // um item no root da crate
 use psicose::p2p::node::Node;      // o mesmo tipo via módulo
 ```
 
-Features do Cargo:
-
-| Feature | Acrescenta no root |
-| --- | --- |
-| *(nenhuma)* | Core completo (fio, pump, janela, P2P). **Zero deps.** |
-| `aead` | `seal_to`, `open_from`, `seal`, `open`, `sealed_len`, `AeadError`, tamanhos |
-| `embedded-io` | `IoTransport`, `IoSource`, `IoSink` |
+Features do Cargo: **nenhuma**. A crate tem **sempre zero dependências**.
+`use psicose::…` expõe só tipos da PSICOSE.
 
 ## Ordem preferida
 
 ```text
-1. Node          — entrada P2P (identidade + vizinhos + connect/accept)
-2. Wire / Pump   — mover bytes (duplex em memória ou seu UART)
-3. Frame         — só se você montar o envelope de 4 bytes à mão
+1. Node / LinkFace   — entrada P2P ou UART no hardware
+2. Wire / Pump       — harness no host ou pumps cruas
+3. Frame             — só se montar o envelope de 4 bytes à mão
 ```
 
+Guia de hardware: [HARDWARE.pt-BR.md](HARDWARE.pt-BR.md).
+
 Não monte um P2P externo e passe conexão para o psicose.
-`Node` / `PeerLink` / `Wire` **são** a pilha.
+`Node` / `PeerLink` / `LinkFace` **são** a pilha.
 
 ---
 
@@ -92,18 +89,14 @@ Não monte um P2P externo e passe conexão para o psicose.
 | [`W8Sender`](https://docs.rs/psicose/latest/psicose/type.W8Sender.html) / [`W8Receiver`](https://docs.rs/psicose/latest/psicose/type.W8Receiver.html) | Aliases com `N = 8`. |
 | `MAX_WINDOW` | Teto duro (8). |
 | [`ByteTransport`](https://docs.rs/psicose/latest/psicose/trait.ByteTransport.html) | Leitura/escrita non-blocking de 1 byte. **Você implementa** no UART/SPI/rádio. |
+| [`LinkFace`](https://docs.rs/psicose/latest/psicose/struct.LinkFace.html) | Demux de uma porta física nos extremos TX/RX do Pump (**caminho hardware**). |
+| [`FaceTx`](https://docs.rs/psicose/latest/psicose/struct.FaceTx.html) / [`FaceRx`](https://docs.rs/psicose/latest/psicose/struct.FaceRx.html) | Extremos de `LinkFace::split()`. |
+| [`FaceError`](https://docs.rs/psicose/latest/psicose/enum.FaceError.html) | Erro da porta ou anel de demux cheio. |
 | [`ByteSource`](https://docs.rs/psicose/latest/psicose/trait.ByteSource.html) | App → bytes (`read_byte`). |
 | [`ByteSink`](https://docs.rs/psicose/latest/psicose/trait.ByteSink.html) | Bytes → app (`write_byte`). |
 | [`RetryPolicy`](https://docs.rs/psicose/latest/psicose/struct.RetryPolicy.html) | Retransmissões por frame antes de falhar. |
 | [`IdleBudget`](https://docs.rs/psicose/latest/psicose/struct.IdleBudget.html) | Detector de hang no loop externo. |
 | [`Error`](https://docs.rs/psicose/latest/psicose/enum.Error.html) | Erro de transporte / protocolo da crate. |
-
-Feature `embedded-io`:
-
-| Nome | O que faz |
-| --- | --- |
-| `IoTransport` | Envolve `Read + Write + ReadReady` como `ByteTransport`. |
-| `IoSource` / `IoSink` | Read/Write da mesma crate como source/sink. |
 
 ---
 
@@ -137,18 +130,11 @@ Feature `embedded-io`:
 
 ---
 
-## AEAD opcional (feature `aead`)
+## Cripto
 
-| Nome | O que faz |
-| --- | --- |
-| `seal_to` / `open_from` | Cifra/decifra em buffers do caller (preferido). |
-| `seal` / `open` | Helpers orientados a buffer. |
-| `sealed_len` | Tamanho ciphertext ‖ tag para um plaintext. |
-| `AeadError` | Falha cripto. |
-| `KEY_LEN` / `NONCE_LEN` / `TAG_LEN` | Tamanhos ChaCha20-Poly1305. |
-
-AEAD fica **acima** do transporte: sele mensagens da app e depois
-envie os bytes com `Pump` / `PeerLink`. CRC não autentica.
+Não está nesta crate. Sele mensagens da aplicação antes do transporte se
+precisar. `Capabilities::ENCRYPTION` / `SessionConfig::SECURE` são só bits
+de anúncio no hello.
 
 ---
 
@@ -160,13 +146,12 @@ envie os bytes com `Pump` / `PeerLink`. CRC não autentica.
 | `psicose::p2p` | Node, links, hello, fragmentação. |
 | `psicose::protocol` | Frame, CRC, assembler. |
 | `psicose::pump` / `tx` / `rx` / `window` | Máquinas de confiabilidade. |
-| `psicose::transport` | `ByteTransport` (+ embedded-io). |
+| `psicose::transport` | `ByteTransport`, `LinkFace`. |
 | `psicose::stream` | Slice source/sink + loops send/recv. |
 | `psicose::timeout` | Retry / idle. |
 | `psicose::error` | `Error`. |
 | `psicose::actors` | Scheduler cooperativo multi-link (avançado). |
 | `psicose::fault` | Transportes com falha para testes. |
-| `psicose::aead` | Cripto sob feature. |
 
 ---
 
@@ -178,7 +163,7 @@ envie os bytes com `Pump` / `PeerLink`. CRC não autentica.
 | --- | --- |
 | `SessionConfig::DEFAULT` | versão 1, janela 8, `STREAM` |
 | `SessionConfig::FORUM` | janela 8 + `STREAM` + `WINDOW` + `FORUM` + `FRAGMENTATION` |
-| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (ainda chama `seal_to`) |
+| `SessionConfig::SECURE` | `FORUM` + `ENCRYPTION` (você sela fora da psicose) |
 | `SessionConfig::offer(w, caps)` | Janela + bits customizados |
 
 **Bits de capability** (negociado = interseção / min da janela)
@@ -189,7 +174,7 @@ envie os bytes com `Pump` / `PeerLink`. CRC não autentica.
 | `STREAM` | Camada stream/mensagem pretendida |
 | `FORUM` | Bit de mensagens estilo fórum |
 | `FRAGMENTATION` | Espera Fragmenter/Defragmenter |
-| `ENCRYPTION` | Peer anuncia AEAD (app ainda deve selar) |
+| `ENCRYPTION` | Peer anuncia cripto na app (ainda deve selar fora) |
 | `COMPRESSION` | Bit reservado de anúncio |
 
 ---

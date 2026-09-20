@@ -1,0 +1,27 @@
+[package]
+name = "esp32-wifi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "PSICOSE on ESP32 classic Wi‑Fi/TCP — hardware example (not published)"
+
+[dependencies]
+# psicose: zero-deps motor. Radio/Embassy live only in this board package.
+psicose = { workspace = true }
+critical-section = { workspace = true }
+static_cell = { workspace = true }
+
+esp-hal = { workspace = true }
+esp-alloc = { workspace = true }
+esp-backtrace = { workspace = true }
+esp-println = { workspace = true }
+esp-bootloader-esp-idf = { workspace = true }
+esp-rtos = { workspace = true }
+esp-radio = { workspace = true }
+
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+embassy-net = { workspace = true }
+embedded-io-async = { workspace = true }

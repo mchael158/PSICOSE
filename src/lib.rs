@@ -1,8 +1,8 @@
 //! # PSICOSE-1B
 //!
 //! A `no_std`, heapless **framework** for reliable byte links: wire protocol,
-//! pump, windowing, **P2P sessions**, plus optional AEAD and `embedded-io`.
-//! You compose the layers; nothing allocates.
+//! pump, windowing, and **P2P sessions**. You compose the layers; nothing
+//! allocates. **Zero crate dependencies** — `use psicose::…` is only PSICOSE.
 //!
 //! P2P is **not** a separate crate. [`Node`], [`PeerId`], [`PeerTable`],
 //! [`PeerLink`], hello negotiation, and fragmentation live in this package
@@ -12,79 +12,56 @@
 //! ## Framework layers
 //!
 //! ```text
-//! exemplos / application
+//! exemplos / application / boards/*
 //!        │
 //!        ▼
 //! psicose::Node                         ← motor entry
 //!        ├─ PeerLink / PeerTable / hello
 //!        ├─ Fragmenter / Defragmenter
-//!        ├─ optional aead::seal_to / open_from
 //!        ▼
-//! Wire::copy / Pump / WindowedPump
+//! LinkFace / Wire::copy / Pump / WindowedPump
 //!        │  DATA 1 byte/frame + CRC-8 + ACK
 //!        ▼
-//! ByteTransport  (yours, or IoTransport)
+//! ByteTransport  (you implement on UART, or Wire harness)
 //! ```
 //!
-//! | Layer | Always in the crate? | Entry points |
-//! | --- | --- | --- |
-//! | Wire frame / CRC / SEQ | yes | [`Frame`], [`crc8`] |
-//! | Stop-and-wait / window | yes | [`Pump`], [`WindowedPump`], [`Wire::copy`] |
-//! | P2P session + peers | yes | [`Node`], [`PeerLink`], [`establish`] |
-//! | AEAD | feature `aead` | [`seal_to`], [`open_from`] |
-//! | `embedded-io` bridge | feature `embedded-io` | [`IoTransport`] |
-//!
-//! ## Optional Cargo features
-//!
-//! | Feature | What it adds |
+//! | Layer | Entry points |
 //! | --- | --- |
-//! | *(none)* | Full framework except crypto + embedded-io adapters (**zero deps**) |
-//! | `aead` | ChaCha20-Poly1305 above the transport |
-//! | `embedded-io` | [`IoTransport`] / [`IoSource`] / [`IoSink`] (embedded-io 0.6) |
+//! | Wire frame / CRC / SEQ | [`Frame`], [`crc8`] |
+//! | Stop-and-wait / window | [`Pump`], [`WindowedPump`], [`Wire::copy`] |
+//! | Hardware demux | [`LinkFace`] |
+//! | P2P session + peers | [`Node`], [`PeerLink`], [`establish`] |
 //!
 //! ## Non-negotiable properties
 //!
-//! - **`#![no_std]`, `#![forbid(unsafe_code)]`.** No heap, no `Vec`, no
-//!   `String`, no `Box`, no `Rc`/`Arc`, no async runtime. Every type in
-//!   this crate is stack-allocated and has a size known at compile time.
-//! - **Constant memory regardless of transfer size.** A 4-byte config blob
-//!   and a multi-gigabyte file are transferred through the exact same
-//!   `Sender`/`Receiver` (1 in flight) or [`window::WindowedSender`]
-//!   (`N ≤ 8` in flight) pair. The protocol never owns the file — only
-//!   the window of payload bytes currently on the wire.
+//! - **`#![no_std]`, `#![forbid(unsafe_code)]`, zero dependencies.**
+//!   No heap, no `Vec`, no third-party crates in the dependency graph.
+//! - **Constant memory regardless of transfer size.**
 //! - **The wire frame is fixed at [`protocol::FRAME_LEN`] = 4 bytes:**
 //!   `TYPE(1) | SEQ(1) | DATA(1) | CRC(1)`.
-//! - **Reliability is the protocol's job.** ACK, NACK, SEQ, CRC-8, and
-//!   tick-based retransmission live in [`tx`] / [`rx`] / [`pump`].
+//! - **Reliability is the protocol's job.** ACK, NACK, SEQ, CRC-8, retry.
 //!
-//! Start with [`prelude`]. Full name-by-name map: `docs/API.md`
-//! (Português: `docs/API.pt-BR.md`). Wire format: `docs/PROTOCOL.md`.
+//! Start with [`prelude`]. Map: `docs/API.md`. Hardware: `docs/HARDWARE.md`.
+//! Spec: `docs/PROTOCOL.md`.
 //!
 //! ## What you import (`use psicose::…`)
 //!
-//! Prefer [`prelude`] for day-to-day work. Almost every type below is also
-//! at the crate root.
+//! Prefer [`prelude`]. Everything below is a **psicose** type — no foreign
+//! crates appear in the public API.
 //!
 //! | Reach for | When |
 //! | --- | --- |
 //! | [`Node`] | P2P entry — identity, neighbors, `connect` / `accept` |
-//! | [`Wire`] | In-memory A↔B harness (`DuplexWire`). Not the 4-byte frame. |
-//! | [`Wire::copy`] | Stop-and-wait copy source→sink through the motor |
-//! | [`establish`] / [`send_message`] | Cooperative P2P helpers (busy-loop) |
-//! | [`PeerLink`] | Live link (prefer opening via [`Node`]) |
-//! | [`PeerTable`] | Neighbor slots (usually via [`Node::table_mut`]) |
-//! | [`SessionConfig`] | Hello offer — presets `DEFAULT`, `FORUM`, `SECURE` |
-//! | [`Capabilities`] | Hello bits — `WINDOW`, `STREAM`, `FORUM`, `FRAGMENTATION`, … |
-//! | [`Fragmenter`] / [`Defragmenter`] | Cut / rebuild application messages |
+//! | [`LinkFace`] | Hardware demux: one UART → Pump TX/RX ends |
+//! | [`Wire`] | In-memory A↔B harness (tests). Not the 4-byte frame. |
+//! | [`Wire::copy`] | Stop-and-wait copy through the motor |
+//! | [`establish`] / [`send_message`] | Cooperative P2P helpers |
+//! | [`PeerLink`] | Live link (prefer [`Node`]) |
+//! | [`SessionConfig`] | Hello offer — `DEFAULT`, `FORUM`, `SECURE` |
 //! | [`Pump`] / [`WindowedPump`] | Reliability over your [`ByteTransport`] |
 //! | [`Frame`] / [`crc8`] | Speak the 4-byte envelope yourself |
 //! | [`SliceSource`] / [`SliceSink`] | `&[u8]` / `&mut [u8]` as byte ends |
-//! | [`seal_to`] / [`open_from`] | Feature `aead` — crypto above the transport |
-//! | [`IoTransport`] | Feature `embedded-io` — wrap embedded-io ports |
-//!
-//! Modules for deeper paths: [`p2p`], [`protocol`], [`pump`], [`tx`],
-//! [`rx`], [`window`], [`transport`], [`stream`], [`timeout`], [`actors`],
-//! [`fault`], and feature-gated [`aead`].
+//! | [`ByteTransport`] | **You** implement this for UART/SPI/radio |
 //!
 //! ## Minimal P2P example
 //!
@@ -110,18 +87,15 @@
 //!
 //! ## Threat model (short)
 //!
-//! CRC-8 detects accidental corruption. It does not authenticate. Enable
-//! feature `aead` and call [`aead::seal_to`] / [`aead::open_from`] on
-//! application messages **before** they enter the transport.
+//! CRC-8 detects accidental corruption. It does **not** authenticate.
+//! Confidentiality/authenticity are **outside** this crate — seal messages
+//! in your application before they enter the transport if needed.
 #![no_std]
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 
 pub mod actors;
-#[cfg(feature = "aead")]
-#[cfg_attr(docsrs, doc(cfg(feature = "aead")))]
-pub mod aead;
 pub mod error;
 pub mod fault;
 pub mod p2p;
@@ -135,12 +109,6 @@ pub mod transport;
 pub mod tx;
 pub mod window;
 
-#[cfg(feature = "aead")]
-#[cfg_attr(docsrs, doc(cfg(feature = "aead")))]
-#[doc(inline)]
-pub use aead::{
-    open, open_from, seal, seal_to, sealed_len, AeadError, KEY_LEN, NONCE_LEN, TAG_LEN,
-};
 #[doc(inline)]
 pub use error::Error;
 #[doc(inline)]
@@ -168,11 +136,7 @@ pub use stream::{
 #[doc(inline)]
 pub use timeout::{IdleBudget, RetryPolicy};
 #[doc(inline)]
-pub use transport::{ByteSink, ByteSource, ByteTransport};
-#[cfg(feature = "embedded-io")]
-#[cfg_attr(docsrs, doc(cfg(feature = "embedded-io")))]
-#[doc(inline)]
-pub use transport::{IoSink, IoSource, IoTransport};
+pub use transport::{ByteSink, ByteSource, ByteTransport, FaceError, FaceRx, FaceTx, LinkFace};
 #[doc(inline)]
 pub use tx::{Sender, TxPoll, TxState};
 #[doc(inline)]

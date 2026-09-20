@@ -1,0 +1,14 @@
+[build]
+target = "xtensa-esp32-none-elf"
+
+[target.xtensa-esp32-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+]
+
+[env]
+# Override at build time, e.g. `$env:SSID="home"; cargo run -p esp32-wifi`
+
+[unstable]
+build-std = ["core", "alloc"]

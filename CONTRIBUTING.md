@@ -1,39 +1,39 @@
 # Contributing
 
-Thanks for looking at PSICOSE. Small, focused PRs are welcome.
-
-## Before you open a PR
+## Checks (host)
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo clippy --all-targets --features aead -- -D warnings
-cargo clippy --all-targets --features embedded-io -- -D warnings
 cargo test
-cargo test --features aead
-cargo test --features embedded-io
-cargo doc --no-deps --all-features
+cargo doc --no-deps
 ```
 
-MSRV is **Rust 1.75** (`rust-toolchain.toml`). Keep the default build
-**zero dependencies** unless you are touching optional features (`aead`,
-`embedded-io`).
+The `psicose` crate must stay **zero dependencies**. Do not add crates to
+`[dependencies]` or optional features that pull third-party code into the
+library. HAL/board code belongs under `boards/`, not in `psicose`.
 
-## Design constraints (please keep)
+## Hardware examples
 
-- `#![no_std]`, `#![forbid(unsafe_code)]`, no heap
-- Wire frame stays 4 bytes; DATA payload stays 1 byte
-- No homemade cryptography — AEAD is RustCrypto ChaCha20-Poly1305 only
-- Capabilities bits announce; they must not silently change `PeerLink` internals
-- Prefer honest docs over marketing demos
+Board packages live under `boards/` in a **separate** Cargo workspace
+(`boards/Cargo.toml`) so host CI can keep psicose MSRV **1.75**.
 
-## Spec
+Shared pins (ESP32 classic, rustc ≥ **1.88**):
 
-Wire and semantics live in [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
-([pt-BR](docs/PROTOCOL.pt-BR.md)). If code and spec disagree, fix one of
-them in the same PR and add a test when you can.
+| Crate | Version |
+| --- | --- |
+| `esp-hal` | 1.1.2 |
+| `esp-radio` | 0.18.0 |
+| `esp-rtos` | 0.3.0 |
+| `esp-alloc` | 0.10.0 |
+| `esp-backtrace` | 0.19.0 |
+| `esp-println` | 0.17.0 |
+| `esp-bootloader-esp-idf` | 0.5.0 |
 
-## Issues
+```sh
+cd boards
+cargo run -p esp32-uart
+cargo run -p esp32-wifi
+```
 
-Bug reports with a minimal repro (`cargo test` or a tiny example) help most.
-Feature requests: say what hardware / link constraint you are hitting.
+Boards are `publish = false` and are not part of the crates.io package.
