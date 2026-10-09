@@ -7,7 +7,7 @@
 //!
 //! | Group | Names |
 //! | --- | --- |
-//! | Motor | [`Node`], [`Wire`], [`LinkFace`], [`establish`], [`send_message`] |
+//! | Motor | [`Node`], [`Wire`], [`LinkFace`], [`Turn`], [`establish`], [`send_message`] |
 //! | P2P | [`PeerId`], [`PeerLink`], [`PeerTable`], [`PeerSession`], … |
 //! | Session | [`SessionConfig`], [`SessionState`], [`Capabilities`] |
 //! | Messages | [`Fragmenter`], [`Defragmenter`], [`MessageId`], [`StreamId`], … |
@@ -37,7 +37,7 @@ pub use crate::{
     Defragmenter, DuplexPort, DuplexWire, Error, FaceError, FaceRx, FaceTx, Fragmenter, Frame,
     IdleBudget, LinkEvent, LinkFace, MessageHeader, MessageId, Node, PeerId, PeerLink, PeerSession,
     PeerTable, PollOutcome, Pump, PumpEvent, Receiver, RetryPolicy, Sender, SessionConfig,
-    SessionState, SessionStats, SliceSink, SliceSource, StreamId, TableError, TxState, W8Receiver,
-    W8Sender, WindowedPump, WindowedReceiver, WindowedSender, Wire, WireCopyError, HEADER_LEN,
-    HELLO_LEN,
+    SessionState, SessionStats, SliceSink, SliceSource, StreamId, TableError, Turn, TurnEvent,
+    TxState, W8Receiver, W8Sender, WindowedPump, WindowedReceiver, WindowedSender, Wire,
+    WireCopyError, HEADER_LEN, HELLO_LEN,
 };

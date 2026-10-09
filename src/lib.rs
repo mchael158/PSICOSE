@@ -136,7 +136,9 @@ pub use stream::{
 #[doc(inline)]
 pub use timeout::{IdleBudget, RetryPolicy};
 #[doc(inline)]
-pub use transport::{ByteSink, ByteSource, ByteTransport, FaceError, FaceRx, FaceTx, LinkFace};
+pub use transport::{
+    ByteSink, ByteSource, ByteTransport, FaceError, FaceRx, FaceTx, LinkFace, Turn, TurnEvent,
+};
 #[doc(inline)]
 pub use tx::{Sender, TxPoll, TxState};
 #[doc(inline)]

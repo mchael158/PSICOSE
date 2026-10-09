@@ -90,6 +90,7 @@ Do **not** build an external P2P stack and pass sockets into psicose.
 | `MAX_WINDOW` | Hard cap (8). |
 | [`ByteTransport`](https://docs.rs/psicose/latest/psicose/trait.ByteTransport.html) | Non-blocking read/write of one byte. **You implement this** for UART/SPI/radio. |
 | [`LinkFace`](https://docs.rs/psicose/latest/psicose/struct.LinkFace.html) | Demux one physical port into Pump TX/RX ends (**hardware path**). |
+| [`Turn`](https://docs.rs/psicose/latest/psicose/struct.Turn.html) | Both peers send: one session at a time, then the turn flips. |
 | [`FaceTx`](https://docs.rs/psicose/latest/psicose/struct.FaceTx.html) / [`FaceRx`](https://docs.rs/psicose/latest/psicose/struct.FaceRx.html) | Ends from `LinkFace::split()`. |
 | [`FaceError`](https://docs.rs/psicose/latest/psicose/enum.FaceError.html) | Port error or demux ring full. |
 | [`ByteSource`](https://docs.rs/psicose/latest/psicose/trait.ByteSource.html) | Application → bytes (`read_byte`). |

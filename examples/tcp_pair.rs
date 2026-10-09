@@ -104,10 +104,8 @@ fn run_peer(stream: TcpStream, initiator: bool, label: &str) {
                         if pump.sender_mut().offer(PING[out_i]).is_ok() {
                             out_i += 1;
                         }
-                    } else if !finish_offered {
-                        if pump.sender_mut().offer_finish().is_ok() {
-                            finish_offered = true;
-                        }
+                    } else if !finish_offered && pump.sender_mut().offer_finish().is_ok() {
+                        finish_offered = true;
                     }
                 }
             }
@@ -155,9 +153,7 @@ fn run_peer(stream: TcpStream, initiator: bool, label: &str) {
 }
 
 fn usage() -> ! {
-    eprintln!(
-        "usage:\n  tcp_pair\n  tcp_pair --listen [ADDR]\n  tcp_pair --connect ADDR"
-    );
+    eprintln!("usage:\n  tcp_pair\n  tcp_pair --listen [ADDR]\n  tcp_pair --connect ADDR");
     std::process::exit(2);
 }
 

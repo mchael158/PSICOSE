@@ -74,12 +74,13 @@ struct MeuUart(/* seu tipo HAL */);
 impl ByteTransport for MeuUart { /* write_byte / read_byte */ }
 
 let face = LinkFace::new(MeuUart(/* … */));
-let mut pump = face.pump();
-loop { let _ = pump.poll(); }
+let mut turn = face.turn::<8>(true); // o outro par: false
+let _ = turn.push(b"ping");
+loop { let _ = turn.poll(); }
 ```
 
-Não grave `INITIATOR = true` nos dois lados de um link com dois boards.
-Deixe um board em `false` (só recebe). Veja o README do board.
+Grave `FIRST` em exatamente um board UART. O outro responde no turno dele
+(`psicose::Turn`). O sketch Wi-Fi continua com um só iniciador. Veja os READMEs dos boards.
 
 ## Fora de escopo aqui
 

@@ -32,6 +32,7 @@ jobs:
       - run: cargo run --example ab_direct
       - run: cargo run --example p2p_pair
       - run: cargo run --example tcp_pair
+      - run: cargo run --example turn_pair
 
   esp32-check:
     runs-on: ubuntu-latest

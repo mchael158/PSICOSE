@@ -12,12 +12,15 @@
 //!
 //! ## Roles
 //!
-//! Set [`INITIATOR`] before flashing:
-//! - `true`  — sends `ping` (loopback: wire GPIO17↔GPIO16 on the same board)
-//! - `false` — receive-only peer (second board; cross TX↔RX + GND)
+//! Set [`FIRST`] before flashing. Both boards send, one session at a time
+//! ([`psicose::Turn`]): the `true` board opens with `ping`, then the `false`
+//! board answers `pong`.
 //!
-//! Do **not** flash `INITIATOR = true` on both ends of a two-board link:
-//! both would START/DATA at once and corrupt the shared TX wire.
+//! - Loopback: `FIRST = true` only works one way (there is no second peer).
+//!   Use two boards for the exchange.
+//! - Two boards: opposite [`FIRST`], cross TX↔RX, common GND.
+//!
+//! Do **not** flash `FIRST = true` on both ends: both would `START` at once.
 //!
 //! ```sh
 //! cd boards
@@ -33,14 +36,15 @@ use esp_hal::{
     uart::{Config, Uart},
 };
 use esp_println::println;
-use psicose::{ByteTransport, LinkFace, PumpEvent, TxState};
+use psicose::{ByteTransport, LinkFace, TurnEvent};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// `true` = send `ping`. `false` = only receive (second board).
-const INITIATOR: bool = true;
+/// `true` = open with `ping`. `false` = wait, then answer `pong`.
+const FIRST: bool = true;
 
-const PING: &[u8] = b"ping";
+const OURS: &[u8] = if FIRST { b"ping" } else { b"pong" };
+const THEIRS: &[u8] = if FIRST { b"pong" } else { b"ping" };
 
 /// Thin ESP32 UART → [`ByteTransport`]. Lives in the **board**, not in psicose.
 struct EspUart(Uart<'static, esp_hal::Blocking>);
@@ -84,56 +88,24 @@ fn main() -> ! {
         }
     };
 
-    println!(
-        "psicose esp32-uart: UART1 @ 115200 GPIO17/16 initiator={INITIATOR}"
-    );
+    println!("psicose esp32-uart: UART1 @ 115200 GPIO17/16 first={FIRST}");
 
     let face = LinkFace::new(EspUart(uart));
-    let mut pump = face.pump();
+    let mut turn = face.turn::<8>(FIRST);
+    let _ = turn.push(OURS);
 
-    // After FINISH/ABORT the sender must `offer_start` before DATA again.
-    let mut need_start = INITIATOR;
-    let mut out_i = 0usize;
-    let mut finish_offered = false;
     let mut got = [0u8; 4];
     let mut got_n = 0usize;
 
     loop {
-        if INITIATOR {
-            let st = pump.sender().state();
-            if matches!(
-                st,
-                TxState::Idle | TxState::Finished | TxState::Aborted | TxState::Failed
-            ) {
-                if need_start {
-                    if pump.sender_mut().offer_start().is_ok() {
-                        need_start = false;
-                        out_i = 0;
-                        finish_offered = false;
-                        got_n = 0;
-                    }
-                } else if st == TxState::Idle {
-                    if out_i < PING.len() {
-                        if pump.sender_mut().offer(PING[out_i]).is_ok() {
-                            out_i += 1;
-                        }
-                    } else if !finish_offered {
-                        if pump.sender_mut().offer_finish().is_ok() {
-                            finish_offered = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        match pump.poll() {
-            Ok(PumpEvent::Received(b)) => {
+        match turn.poll() {
+            Ok(TurnEvent::Received(b)) => {
                 if got_n < got.len() {
                     got[got_n] = b;
                     got_n += 1;
                 }
-                println!("rx {b:#04x} ({got_n}/{})", PING.len());
-                if got_n == PING.len() {
+                println!("rx {b:#04x} ({got_n}/{})", THEIRS.len());
+                if got_n == THEIRS.len() {
                     println!(
                         "psicose: got {:?}",
                         core::str::from_utf8(&got[..got_n]).unwrap_or("?")
@@ -141,25 +113,12 @@ fn main() -> ! {
                     got_n = 0;
                 }
             }
-            Ok(PumpEvent::Completed) => {
-                println!("psicose: session completed");
-                if INITIATOR {
-                    need_start = true;
-                }
-            }
-            Ok(PumpEvent::Aborted) => {
-                println!("psicose: aborted");
-                if INITIATOR {
-                    need_start = true;
-                }
-            }
-            Ok(_) => {}
+            Ok(TurnEvent::Yielded) => println!("psicose: our turn done"),
+            Ok(TurnEvent::Granted) => println!("psicose: our turn"),
+            Ok(TurnEvent::Idle) => {}
             Err(e) => {
                 println!("psicose poll err: {e:?}");
-                let _ = pump.abort();
-                if INITIATOR {
-                    need_start = true;
-                }
+                let _ = turn.abort();
             }
         }
     }

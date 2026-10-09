@@ -74,12 +74,13 @@ struct MyUart(/* your HAL type */);
 impl ByteTransport for MyUart { /* write_byte / read_byte */ }
 
 let face = LinkFace::new(MyUart(/* … */));
-let mut pump = face.pump();
-loop { let _ = pump.poll(); }
+let mut turn = face.turn::<8>(true); // other peer: false
+let _ = turn.push(b"ping");
+loop { let _ = turn.poll(); }
 ```
 
-Do **not** flash `INITIATOR = true` on both ends of a two-board link.
-Set one board to `false` (receive-only). See the board README.
+Set `FIRST` on exactly one UART board. The other answers on its own turn
+(`psicose::Turn`). The Wi-Fi sketch is still one initiator. See the board READMEs.
 
 ## Out of scope here
 

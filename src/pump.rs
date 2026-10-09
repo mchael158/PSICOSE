@@ -89,6 +89,11 @@ where
     rx: Receiver<Rx>,
     stats: SessionStats,
     last_acked: bool,
+    /// `Sender` stays `Finished` and would report `TransferDone` forever.
+    /// The edge is reported once so later RX bytes are not dropped.
+    tx_done_seen: bool,
+    /// App byte and a fresh TX completion arrived in the same step.
+    pending_completed: bool,
 }
 
 impl<Tx, Rx> Pump<Tx, Rx>
@@ -103,6 +108,8 @@ where
             rx,
             stats: SessionStats::default(),
             last_acked: false,
+            tx_done_seen: false,
+            pending_completed: false,
         }
     }
 
@@ -152,8 +159,16 @@ where
     /// 2. If RX accepted ABORT, locally cancel TX (do not send a second ABORT).
     /// 3. Let TX write or wait.
     /// 4. Return immediately.
+    ///
+    /// `TransferDone` is edge-triggered. The sender stays in `Finished`, but
+    /// a later poll still returns RX bytes instead of repeating `Completed`.
     pub fn poll(&mut self) -> Result<PumpEvent, Error<Tx::Error>> {
         self.stats.ticks = self.stats.ticks.saturating_add(1);
+
+        if self.pending_completed {
+            self.pending_completed = false;
+            return Ok(PumpEvent::Completed);
+        }
 
         let rx = self.rx.poll()?;
         match rx {
@@ -190,14 +205,20 @@ where
             self.stats.retries = self.stats.retries.saturating_add(1);
         }
 
+        let tx_done_edge = matches!(tx, TxPoll::TransferDone) && !self.tx_done_seen;
+        self.tx_done_seen = matches!(tx, TxPoll::TransferDone);
+
         if matches!(rx, PollOutcome::Aborted) || matches!(tx, TxPoll::Aborted) {
             return Ok(PumpEvent::Aborted);
         }
-        if matches!(rx, PollOutcome::TransferFinished) || matches!(tx, TxPoll::TransferDone) {
-            return Ok(PumpEvent::Completed);
-        }
         if let PollOutcome::Delivered(byte) = rx {
+            if tx_done_edge {
+                self.pending_completed = true;
+            }
             return Ok(PumpEvent::Received(byte));
+        }
+        if matches!(rx, PollOutcome::TransferFinished) || tx_done_edge {
+            return Ok(PumpEvent::Completed);
         }
         if matches!(tx, TxPoll::Acked) {
             return Ok(PumpEvent::Sent);

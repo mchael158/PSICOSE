@@ -28,7 +28,7 @@ Eficiência máxima antes dos ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK): 1/8 = 1
 
 ```toml
 [dependencies]
-psicose = "0.3"   # zero dependências — API só psicose::…
+psicose = "0.4"   # zero dependências — API só psicose::…
 ```
 
 | | |

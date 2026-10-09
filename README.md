@@ -29,7 +29,7 @@ Best-case efficiency before ACKs: 1/4 = 25%. Stop-and-wait (DATA+ACK): 1/8 = 12.
 
 ```toml
 [dependencies]
-psicose = "0.3"   # zero dependencies — API is only psicose::…
+psicose = "0.4"   # zero dependencies — API is only psicose::…
 ```
 
 | | |

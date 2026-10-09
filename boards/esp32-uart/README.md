@@ -3,7 +3,7 @@
 Firmware example: reliable byte link over **UART1** using the PSICOSE motor.
 
 ```text
-UART1 → ByteTransport (board-local) → LinkFace → Pump
+UART1 → ByteTransport (board-local) → LinkFace → Turn
 ```
 
 - **`psicose`** has **zero** crate dependencies. Its API is only `psicose::…`.
@@ -17,23 +17,18 @@ UART1 → ByteTransport (board-local) → LinkFace → Pump
 | UART1 RX | **16** | |
 | Baud | 115200 | 8N1 |
 
-### Loopback (one board)
-
-1. Leave [`INITIATOR`](src/main.rs) = `true`.
-2. Connect **GPIO17 ↔ GPIO16**.
-3. `cargo run` — you should see `ping` round-trip through ACK/CRC.
-
 ### Two boards
 
-Flash **different roles** (edit `INITIATOR` before each flash):
+Flash **opposite** [`FIRST`](src/main.rs) values. Both send, one session at a time
+(`ping`, then `pong`):
 
-| Board | `INITIATOR` | Wiring |
+| Board | `FIRST` | Wiring |
 | --- | --- | --- |
 | A | `true` | GPIO17 → B GPIO16 |
 | B | `false` | GPIO17 → A GPIO16 |
 | both | | common GND |
 
-If both are `true`, both send START/DATA at once and the wire corrupts.
+If both are `true`, both open `START` at once and the wire corrupts.
 
 ## Toolchain
 

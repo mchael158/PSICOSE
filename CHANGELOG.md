@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.4.1 — 2026-10-09
+
+### Features
+- **`Turn`** — cooperative sessions on one `LinkFace`. One peer opens
+  `START`; after `FINISH` the turn flips so both sides can send without
+  overlapping frames. Host demo: `cargo run --example turn_pair`.
+  ESP32 UART sketch uses `FIRST` instead of a receive-only role.
+
+### Fixes
+- `Pump::poll` reports TX `TransferDone` once. The sender stays
+  `Finished`, and a later poll still delivers RX bytes.
+
 ## 0.4.0 — 2026-09-20
 
 ### Breaking

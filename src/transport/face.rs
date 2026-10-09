@@ -21,9 +21,9 @@
 //! # Write discipline
 //!
 //! [`FaceTx`] and [`FaceRx`] share one TX pin. Stop-and-wait keeps them from
-//! writing at the same time in the usual cases (sender waits for ACK while
-//! the peer only ACKs). Do **not** run two initiators on one link that both
-//! stream DATA concurrently — their ACK and DATA bytes would interleave.
+//! writing at the same time while only one peer streams DATA. When **both**
+//! peers send, use [`crate::Turn`]: only the peer whose turn it is opens
+//! `START`, then the turn flips. Two concurrent `START`s interleave on the wire.
 
 use core::cell::RefCell;
 use core::fmt;
@@ -31,6 +31,7 @@ use core::fmt;
 use crate::protocol::{FrameAssembler, FrameType, FRAME_LEN};
 use crate::pump::{Pump, WindowedPump};
 use crate::timeout::RetryPolicy;
+use crate::transport::turn::Turn;
 use crate::transport::ByteTransport;
 use crate::window::MAX_WINDOW;
 
@@ -159,6 +160,13 @@ impl<T: ByteTransport> LinkFace<T> {
     pub fn pump_with(&self, policy: RetryPolicy) -> Pump<FaceTx<'_, T>, FaceRx<'_, T>> {
         let (tx, rx) = self.split();
         Pump::on_with(tx, rx, policy)
+    }
+
+    /// Turn-taking pump: both peers send, one session at a time.
+    ///
+    /// `first` on exactly one peer. `N` is that peer's outbound queue.
+    pub fn turn<const N: usize>(&self, first: bool) -> Turn<FaceTx<'_, T>, FaceRx<'_, T>, N> {
+        Turn::new(self.pump(), first)
     }
 
     /// Windowed pump for [`crate::PeerLink`] (`N = MAX_WINDOW`, limit 1 until hello).

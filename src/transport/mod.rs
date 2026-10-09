@@ -8,6 +8,8 @@
 
 pub mod face;
 pub mod traits;
+pub mod turn;
 
 pub use face::{FaceError, FaceRx, FaceTx, LinkFace};
 pub use traits::{ByteSink, ByteSource, ByteTransport};
+pub use turn::{Turn, TurnEvent};
