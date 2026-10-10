@@ -77,10 +77,7 @@ impl ByteTransport for EspUart {
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let uart = match Uart::new(
-        peripherals.UART1,
-        Config::default().with_baudrate(115_200),
-    ) {
+    let uart = match Uart::new(peripherals.UART1, Config::default().with_baudrate(115_200)) {
         Ok(u) => u.with_tx(peripherals.GPIO17).with_rx(peripherals.GPIO16),
         Err(e) => {
             println!("UART1 config failed: {e:?}");

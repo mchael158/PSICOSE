@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.4.2 — 2026-10-10
+
+- ESP32 Wi-Fi sketch uses `Turn` (board opens `ping`, host
+  `turn_pair --listen` answers `pong`). The TCP RX ring waits when full
+  instead of dropping bytes.
+
 ## 0.4.1 — 2026-10-09
 
 ### Features

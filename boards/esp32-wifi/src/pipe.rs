@@ -62,8 +62,16 @@ static PIPE: Mutex<RefCell<Ends>> = Mutex::new(RefCell::new(Ends {
 }));
 
 /// Push a byte received from the socket into the PSICOSE RX side.
+///
+/// Returns `false` when the ring is full. The caller keeps the byte and
+/// retries after PSICOSE drains the ring — never drops it.
 pub fn net_push_rx(byte: u8) -> bool {
     critical_section::with(|cs| PIPE.borrow_ref_mut(cs).from_net.push(byte))
+}
+
+/// How many RX bytes still fit. Read at most this many from TCP.
+pub fn net_rx_free() -> usize {
+    critical_section::with(|cs| RING - PIPE.borrow_ref(cs).from_net.len)
 }
 
 /// Pop a byte that PSICOSE wants sent on the socket.

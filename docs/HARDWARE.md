@@ -79,8 +79,10 @@ let _ = turn.push(b"ping");
 loop { let _ = turn.poll(); }
 ```
 
-Set `FIRST` on exactly one UART board. The other answers on its own turn
-(`psicose::Turn`). The Wi-Fi sketch is still one initiator. See the board READMEs.
+Set `FIRST` on exactly one peer. The other answers on its own turn
+(`psicose::Turn`). UART: opposite `FIRST` on the two boards. Wi-Fi: the
+board opens `ping`, and `turn_pair --listen` answers `pong`. A full Wi-Fi
+RX ring waits. See the board READMEs.
 
 ## Out of scope here
 

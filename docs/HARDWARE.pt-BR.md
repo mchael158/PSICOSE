@@ -79,8 +79,10 @@ let _ = turn.push(b"ping");
 loop { let _ = turn.poll(); }
 ```
 
-Grave `FIRST` em exatamente um board UART. O outro responde no turno dele
-(`psicose::Turn`). O sketch Wi-Fi continua com um só iniciador. Veja os READMEs dos boards.
+Grave `FIRST` em exatamente um par. O outro responde no turno dele
+(`psicose::Turn`). UART: `FIRST` oposto nos dois boards. Wi-Fi: o board
+abre com `ping`, e `turn_pair --listen` responde `pong`. Anel RX cheio
+espera. Veja os READMEs dos boards.
 
 ## Fora de escopo aqui
 

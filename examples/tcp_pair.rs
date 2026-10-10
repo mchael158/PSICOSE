@@ -11,7 +11,8 @@
 //! # two peers on 127.0.0.1 (local smoke test)
 //!
 //! cargo run --example tcp_pair -- --listen 0.0.0.0:19876
-//! # receive-only server for an ESP32 initiator
+//! # receive-only server (one session, no reply).
+//! # The ESP32 Wi-Fi sketch speaks both ways: use `turn_pair --listen`.
 //!
 //! cargo run --example tcp_pair -- --connect 192.168.1.20:19876
 //! # initiator client toward a listening peer

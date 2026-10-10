@@ -7,8 +7,18 @@
 //!
 //! `Turn` on a [`LinkFace`] is what keeps the two `START`s from overlapping.
 //!
-//! Run: `cargo run --example turn_pair`
+//! ```sh
+//! cargo run --example turn_pair
+//! # both peers on 127.0.0.1
+//!
+//! cargo run --example turn_pair -- --listen 0.0.0.0:19876
+//! # answers `pong` — peer for boards/esp32-wifi (FIRST = true)
+//!
+//! cargo run --example turn_pair -- --connect ADDR
+//! # opens with `ping`
+//! ```
 
+use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
@@ -100,15 +110,42 @@ fn run_peer(stream: TcpStream, first: bool, label: &str, payload: &[u8]) {
     panic!("{label}: stalled");
 }
 
+fn usage() -> ! {
+    eprintln!("usage:\n  turn_pair\n  turn_pair --listen [ADDR]\n  turn_pair --connect ADDR");
+    std::process::exit(2);
+}
+
 fn main() {
-    let listener = TcpListener::bind(LOCAL).expect("bind");
-    let client = thread::spawn(|| {
-        thread::sleep(Duration::from_millis(50));
-        let stream = TcpStream::connect(LOCAL).expect("connect");
-        run_peer(stream, true, "client", b"ping");
-    });
-    let (server, _) = listener.accept().expect("accept");
-    run_peer(server, false, "server", b"pong");
-    client.join().expect("client thread");
-    println!("turn_pair: ok");
+    let mut args = env::args().skip(1);
+    match args.next().as_deref() {
+        None => {
+            let listener = TcpListener::bind(LOCAL).expect("bind");
+            let client = thread::spawn(|| {
+                thread::sleep(Duration::from_millis(50));
+                let stream = TcpStream::connect(LOCAL).expect("connect");
+                run_peer(stream, true, "client", b"ping");
+            });
+            let (server, _) = listener.accept().expect("accept");
+            run_peer(server, false, "server", b"pong");
+            client.join().expect("client thread");
+            println!("turn_pair: ok");
+        }
+        Some("--listen") => {
+            let addr = args.next().unwrap_or_else(|| "0.0.0.0:19876".to_string());
+            println!("turn_pair: listening on {addr} (answers pong)");
+            let listener = TcpListener::bind(&addr).expect("bind");
+            let (stream, peer) = listener.accept().expect("accept");
+            println!("turn_pair: accepted {peer}");
+            run_peer(stream, false, "listen", b"pong");
+            println!("turn_pair: ok");
+        }
+        Some("--connect") => {
+            let addr = args.next().unwrap_or_else(|| usage());
+            println!("turn_pair: connecting to {addr} (opens ping)");
+            let stream = TcpStream::connect(&addr).expect("connect");
+            run_peer(stream, true, "connect", b"ping");
+            println!("turn_pair: ok");
+        }
+        Some(_) => usage(),
+    }
 }

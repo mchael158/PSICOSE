@@ -3,7 +3,7 @@
 Firmware example: reliable byte link over **TCP on Wi‑Fi** using the PSICOSE motor.
 
 ```text
-Wi‑Fi STA → embassy-net TcpSocket → TcpPipe → LinkFace → Pump
+Wi‑Fi STA → embassy-net TcpSocket → TcpPipe → LinkFace → Turn
 ```
 
 - **`psicose`** has **zero** crate dependencies. API is only `psicose::…`.
@@ -14,12 +14,12 @@ feeds bytes through a ring pipe into [`LinkFace`](https://docs.rs/psicose/latest
 
 ## Roles
 
-| Side | Role | How |
+| Side | `Turn` | How |
 | --- | --- | --- |
-| ESP32 | initiator (`INITIATOR = true`) | connects to `HOST:19876`, sends `ping` |
-| PC | receive-only | `cargo run --example tcp_pair -- --listen 0.0.0.0:19876` |
+| ESP32 | `FIRST = true` | connects to `HOST:19876`, opens with `ping` |
+| PC | answers | `cargo run --example turn_pair -- --listen 0.0.0.0:19876` (`pong`) |
 
-Do **not** set `INITIATOR = true` on both ends.
+Do **not** open with `ping` on both ends. A full RX ring waits; bytes are not dropped.
 
 ## Build / flash
 
@@ -39,10 +39,10 @@ cargo run -p esp32-wifi
 On the PC (same Wi‑Fi), start the listener **before** the board connects:
 
 ```sh
-cargo run --example tcp_pair -- --listen 0.0.0.0:19876
+cargo run --example turn_pair -- --listen 0.0.0.0:19876
 ```
 
-You should see `ping` complete on both sides (ACK/CRC through the motor).
+You should see `ping` on the PC and `pong` on the board (ACK/CRC through the motor).
 
 ## Host-only smoke (no board)
 
