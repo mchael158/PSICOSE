@@ -74,15 +74,19 @@ struct MyUart(/* your HAL type */);
 impl ByteTransport for MyUart { /* write_byte / read_byte */ }
 
 let face = LinkFace::new(MyUart(/* … */));
-let mut turn = face.turn::<8>(true); // other peer: false
-let _ = turn.push(b"ping");
-loop { let _ = turn.poll(); }
+let mut link = face.window_turn::<8>(true); // other peer: false
+let _ = link.push(&sample); // up to 8 bytes fill the DATA window
+loop { let _ = link.poll(); }
 ```
 
-Set `FIRST` on exactly one peer. The other answers on its own turn
-(`psicose::Turn`). UART: opposite `FIRST` on the two boards. Wi-Fi: the
-board opens `ping`, and `turn_pair --listen` answers `pong`. A full Wi-Fi
-RX ring waits. See the board READMEs.
+`window_turn` is the crossed-UART entry: one session at a time, DATA
+window of 8, no P2P hello. A single pair (RS-485, radio) uses
+[`HalfDuplex`](https://docs.rs/psicose/latest/psicose/struct.HalfDuplex.html)
+plus stop-and-wait `Turn`: the frame is staged and the direction pin is
+high only for that burst. Set `FIRST` on exactly one peer. UART: opposite
+`FIRST` on the two boards (8-byte samples). Wi-Fi: the board opens
+`ping` on stop-and-wait `Turn`, and `turn_pair --listen` answers `pong`.
+A full Wi-Fi RX ring waits. See the board READMEs.
 
 ## Out of scope here
 

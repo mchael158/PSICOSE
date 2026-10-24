@@ -74,15 +74,16 @@ struct MeuUart(/* seu tipo HAL */);
 impl ByteTransport for MeuUart { /* write_byte / read_byte */ }
 
 let face = LinkFace::new(MeuUart(/* … */));
-let mut turn = face.turn::<8>(true); // o outro par: false
-let _ = turn.push(b"ping");
-loop { let _ = turn.poll(); }
+let mut link = face.window_turn::<8>(true); // o outro par: false
+let _ = link.push(&amostra); // até 8 bytes enchem a janela de DATA
+loop { let _ = link.poll(); }
 ```
 
-Grave `FIRST` em exatamente um par. O outro responde no turno dele
-(`psicose::Turn`). UART: `FIRST` oposto nos dois boards. Wi-Fi: o board
-abre com `ping`, e `turn_pair --listen` responde `pong`. Anel RX cheio
-espera. Veja os READMEs dos boards.
+`window_turn` é a entrada de hardware: uma sessão por vez, janela de
+DATA 8, sem hello P2P. Grave `FIRST` em exatamente um par. UART: `FIRST`
+oposto nos dois boards (amostras de 8 bytes). Wi-Fi: o board abre com
+`ping` no `Turn` stop-and-wait, e `turn_pair --listen` responde `pong`.
+Anel RX cheio espera. Veja os READMEs dos boards.
 
 ## Fora de escopo aqui
 

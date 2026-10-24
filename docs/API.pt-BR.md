@@ -91,6 +91,7 @@ Não monte um P2P externo e passe conexão para o psicose.
 | [`ByteTransport`](https://docs.rs/psicose/latest/psicose/trait.ByteTransport.html) | Leitura/escrita non-blocking de 1 byte. **Você implementa** no UART/SPI/rádio. |
 | [`LinkFace`](https://docs.rs/psicose/latest/psicose/struct.LinkFace.html) | Demux de uma porta física nos extremos TX/RX do Pump (**caminho hardware**). |
 | [`Turn`](https://docs.rs/psicose/latest/psicose/struct.Turn.html) | Os dois pares enviam: uma sessão de cada vez, depois o turno inverte. |
+| [`WindowTurn`](https://docs.rs/psicose/latest/psicose/struct.WindowTurn.html) | Entrada de hardware: o mesmo turno, janela de DATA 8. Sem hello P2P. |
 | [`FaceTx`](https://docs.rs/psicose/latest/psicose/struct.FaceTx.html) / [`FaceRx`](https://docs.rs/psicose/latest/psicose/struct.FaceRx.html) | Extremos de `LinkFace::split()`. |
 | [`FaceError`](https://docs.rs/psicose/latest/psicose/enum.FaceError.html) | Erro da porta ou anel de demux cheio. |
 | [`ByteSource`](https://docs.rs/psicose/latest/psicose/trait.ByteSource.html) | App → bytes (`read_byte`). |

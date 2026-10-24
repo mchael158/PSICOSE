@@ -310,6 +310,9 @@ where
     rx: WindowedReceiver<Rx, N>,
     stats: SessionStats,
     last_acked: bool,
+    /// See [`Pump::poll`]: `TransferDone` stays latched on `Finished`.
+    tx_done_seen: bool,
+    pending_completed: bool,
 }
 
 impl<Tx, Rx, const N: usize> WindowedPump<Tx, Rx, N>
@@ -324,6 +327,8 @@ where
             rx,
             stats: SessionStats::default(),
             last_acked: false,
+            tx_done_seen: false,
+            pending_completed: false,
         }
     }
 
@@ -382,8 +387,16 @@ where
     }
 
     /// One non-blocking step: RX first, then TX. Never loops.
+    ///
+    /// `TransferDone` is edge-triggered, same as [`Pump::poll`], so a
+    /// later session's bytes are not discarded.
     pub fn poll(&mut self) -> Result<PumpEvent, Error<Tx::Error>> {
         self.stats.ticks = self.stats.ticks.saturating_add(1);
+
+        if self.pending_completed {
+            self.pending_completed = false;
+            return Ok(PumpEvent::Completed);
+        }
 
         let rx = self.rx.poll()?;
         match rx {
@@ -418,14 +431,20 @@ where
             self.stats.retries = self.stats.retries.saturating_add(1);
         }
 
+        let tx_done_edge = matches!(tx, TxPoll::TransferDone) && !self.tx_done_seen;
+        self.tx_done_seen = matches!(tx, TxPoll::TransferDone);
+
         if matches!(rx, PollOutcome::Aborted) || matches!(tx, TxPoll::Aborted) {
             return Ok(PumpEvent::Aborted);
         }
-        if matches!(rx, PollOutcome::TransferFinished) || matches!(tx, TxPoll::TransferDone) {
-            return Ok(PumpEvent::Completed);
-        }
         if let PollOutcome::Delivered(byte) = rx {
+            if tx_done_edge {
+                self.pending_completed = true;
+            }
             return Ok(PumpEvent::Received(byte));
+        }
+        if matches!(rx, PollOutcome::TransferFinished) || tx_done_edge {
+            return Ok(PumpEvent::Completed);
         }
         if matches!(tx, TxPoll::Acked) {
             return Ok(PumpEvent::Sent);

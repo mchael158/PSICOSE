@@ -3,7 +3,7 @@
 Firmware example: reliable byte link over **UART1** using the PSICOSE motor.
 
 ```text
-UART1 → ByteTransport (board-local) → LinkFace → Turn
+UART1 → ByteTransport (board-local) → LinkFace → WindowTurn
 ```
 
 - **`psicose`** has **zero** crate dependencies. Its API is only `psicose::…`.
@@ -19,8 +19,8 @@ UART1 → ByteTransport (board-local) → LinkFace → Turn
 
 ### Two boards
 
-Flash **opposite** [`FIRST`](src/main.rs) values. Both send, one session at a time
-(`ping`, then `pong`):
+Flash **opposite** [`FIRST`](src/main.rs) values. Both send one 8-byte sample
+at a time, DATA window of 8:
 
 | Board | `FIRST` | Wiring |
 | --- | --- | --- |

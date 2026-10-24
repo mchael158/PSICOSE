@@ -31,7 +31,7 @@ use core::fmt;
 use crate::protocol::{FrameAssembler, FrameType, FRAME_LEN};
 use crate::pump::{Pump, WindowedPump};
 use crate::timeout::RetryPolicy;
-use crate::transport::turn::Turn;
+use crate::transport::turn::{Turn, WindowTurn};
 use crate::transport::ByteTransport;
 use crate::window::MAX_WINDOW;
 
@@ -167,6 +167,19 @@ impl<T: ByteTransport> LinkFace<T> {
     /// `first` on exactly one peer. `N` is that peer's outbound queue.
     pub fn turn<const N: usize>(&self, first: bool) -> Turn<FaceTx<'_, T>, FaceRx<'_, T>, N> {
         Turn::new(self.pump(), first)
+    }
+
+    /// Hardware path: [`Turn`] plus the selective-repeat window of 8.
+    ///
+    /// One peer opens `START`. DATA frames fill the window, then `FINISH`.
+    /// The other peer answers on the next turn. `N` is that peer's queue.
+    /// P2P hello is not required — this is the UART / SPI / radio entry.
+    pub fn window_turn<const N: usize>(
+        &self,
+        first: bool,
+    ) -> WindowTurn<FaceTx<'_, T>, FaceRx<'_, T>, N> {
+        let (tx, rx) = self.split();
+        WindowTurn::new(crate::pump::WindowedPump::on(tx, rx), first)
     }
 
     /// Windowed pump for [`crate::PeerLink`] (`N = MAX_WINDOW`, limit 1 until hello).

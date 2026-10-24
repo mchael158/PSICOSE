@@ -12,9 +12,10 @@
 //! Pass `first = true` on one peer and `first = false` on the other.
 
 use crate::error::Error;
-use crate::pump::{Pump, PumpEvent};
+use crate::pump::{Pump, PumpEvent, WindowedPump};
 use crate::transport::ByteTransport;
 use crate::tx::TxState;
+use crate::window::MAX_WINDOW;
 
 /// What one [`Turn::poll`] observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +171,145 @@ where
     }
 }
 
+/// Hardware turn: both peers send, and DATA uses the window of 8.
+///
+/// [`Turn`] is stop-and-wait (one DATA frame, then its ACK). On a UART
+/// that costs a full round trip per byte. [`WindowTurn`] still opens one
+/// session at a time — so two `START`s never share the wire — but fills
+/// the selective-repeat window before `FINISH`. The 4-byte frame is the
+/// same. `N` is this peer's outbound queue (stack only).
+pub struct WindowTurn<Tx, Rx, const N: usize>
+where
+    Tx: ByteTransport,
+    Rx: ByteTransport<Error = Tx::Error>,
+{
+    pump: WindowedPump<Tx, Rx, MAX_WINDOW>,
+    speak: bool,
+    buf: [u8; N],
+    len: usize,
+    index: usize,
+    need_start: bool,
+    finish_offered: bool,
+}
+
+impl<Tx, Rx, const N: usize> WindowTurn<Tx, Rx, N>
+where
+    Tx: ByteTransport,
+    Rx: ByteTransport<Error = Tx::Error>,
+{
+    /// `first` sends the opening session. The other peer waits.
+    pub fn new(pump: WindowedPump<Tx, Rx, MAX_WINDOW>, first: bool) -> Self {
+        WindowTurn {
+            pump,
+            speak: first,
+            buf: [0; N],
+            len: 0,
+            index: 0,
+            need_start: true,
+            finish_offered: false,
+        }
+    }
+
+    /// Whether this peer may open the next session.
+    pub const fn speaking(&self) -> bool {
+        self.speak
+    }
+
+    /// Bytes still queued for our next (or current) session.
+    pub const fn queued(&self) -> usize {
+        self.len
+    }
+
+    /// The windowed pump underneath (stats, window limit).
+    pub const fn pump(&self) -> &WindowedPump<Tx, Rx, MAX_WINDOW> {
+        &self.pump
+    }
+
+    /// Cancel the in-flight session. The turn does not flip.
+    pub fn abort(&mut self) -> Result<(), Error<Tx::Error>> {
+        self.need_start = true;
+        self.index = 0;
+        self.finish_offered = false;
+        self.pump.abort()
+    }
+
+    /// Queue application bytes for the next session we open.
+    ///
+    /// Returns how many bytes fit. Returns `0` once `FINISH` for the
+    /// current session is already on the wire.
+    pub fn push(&mut self, bytes: &[u8]) -> usize {
+        if self.finish_offered {
+            return 0;
+        }
+        let mut n = 0usize;
+        while n < bytes.len() && self.len < N {
+            self.buf[self.len] = bytes[n];
+            self.len += 1;
+            n += 1;
+        }
+        n
+    }
+
+    /// One cooperative step. DATA is offered until the window is full.
+    pub fn poll(&mut self) -> Result<TurnEvent, Error<Tx::Error>> {
+        self.drive_tx();
+        match self.pump.poll()? {
+            PumpEvent::Received(byte) => Ok(TurnEvent::Received(byte)),
+            PumpEvent::Completed if self.speak => {
+                self.speak = false;
+                self.len = 0;
+                self.index = 0;
+                self.need_start = true;
+                self.finish_offered = false;
+                Ok(TurnEvent::Yielded)
+            }
+            PumpEvent::Completed => {
+                self.speak = true;
+                self.need_start = true;
+                self.index = 0;
+                self.finish_offered = false;
+                Ok(TurnEvent::Granted)
+            }
+            PumpEvent::Aborted if self.speak => {
+                self.need_start = true;
+                self.index = 0;
+                self.finish_offered = false;
+                Ok(TurnEvent::Idle)
+            }
+            PumpEvent::Aborted | PumpEvent::Sent | PumpEvent::Progress | PumpEvent::Idle => {
+                Ok(TurnEvent::Idle)
+            }
+        }
+    }
+
+    fn drive_tx(&mut self) {
+        if !self.speak || self.len == 0 {
+            return;
+        }
+        if self.need_start {
+            if self.pump.sender_mut().offer_start().is_ok() {
+                self.need_start = false;
+                self.index = 0;
+                self.finish_offered = false;
+            }
+            return;
+        }
+        if self.finish_offered {
+            return;
+        }
+        while self.index < self.len {
+            let byte = self.buf[self.index];
+            if self.pump.sender_mut().offer(byte).is_err() {
+                return;
+            }
+            self.index += 1;
+        }
+        if self.pump.sender_mut().offer_finish().is_ok() {
+            self.finish_offered = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +452,60 @@ mod tests {
         assert!(a_yielded);
         assert!(!a.speaking());
         assert!(b.speaking() || b.queued() == 0);
+    }
+
+    #[test]
+    fn window_turn_exchanges_eight_byte_samples() {
+        let bus = Bus {
+            ab: RefCell::new(Ring::new()),
+            ba: RefCell::new(Ring::new()),
+        };
+        let face_a = LinkFace::new(End {
+            bus: &bus,
+            is_a: true,
+        });
+        let face_b = LinkFace::new(End {
+            bus: &bus,
+            is_a: false,
+        });
+        // 23.1 °C / 47% / 3710 mV, then 22.0 °C / 40% / 3600 mV.
+        let sample_a = [0xA5, 0xE7, 0x00, 0x2F, 0x7E, 0x0E, 0x00, 0x1D];
+        let sample_b = [0xA5, 0xDC, 0x00, 0x28, 0x10, 0x0E, 0x01, 0x4E];
+        let mut a = face_a.window_turn::<8>(true);
+        let mut b = face_b.window_turn::<8>(false);
+        assert_eq!(a.push(&sample_a), 8);
+        assert_eq!(b.push(&sample_b), 8);
+
+        let mut got_a = [0u8; 8];
+        let mut got_b = [0u8; 8];
+        let mut na = 0usize;
+        let mut nb = 0usize;
+        let mut a_yielded = false;
+
+        for _ in 0..40_000 {
+            match a.poll().unwrap() {
+                TurnEvent::Received(byte) => {
+                    assert!(a_yielded, "reply bytes before our session finished");
+                    got_a[na] = byte;
+                    na += 1;
+                }
+                TurnEvent::Yielded => a_yielded = true,
+                TurnEvent::Granted | TurnEvent::Idle => {}
+            }
+            match b.poll().unwrap() {
+                TurnEvent::Received(byte) => {
+                    got_b[nb] = byte;
+                    nb += 1;
+                }
+                TurnEvent::Idle | TurnEvent::Yielded | TurnEvent::Granted => {}
+            }
+            if a_yielded && na == 8 && nb == 8 {
+                break;
+            }
+        }
+
+        assert!(a_yielded);
+        assert_eq!(got_b, sample_a);
+        assert_eq!(got_a, sample_b);
     }
 }

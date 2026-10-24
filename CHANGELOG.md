@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`HalfDuplex`** — RS-485 / radio line. A frame is staged, then clocked
+  out in one burst while [`LineDirection`] holds the pin. Stop-and-wait
+  [`Turn`] is the session on that pair. ESP32 UART: `RS485` on GPIO4.
+
+- **`WindowTurn`** / `LinkFace::window_turn` — hardware entry on one
+  UART. Both peers still take turns, and DATA fills the window of 8
+  without a P2P hello. ESP32 UART sends an 8-byte sample.
+  Host: `cargo run --example sensor_telemetry`.
+
 ## 0.4.2 — 2026-10-10
 
 - ESP32 Wi-Fi sketch uses `Turn` (board opens `ping`, host

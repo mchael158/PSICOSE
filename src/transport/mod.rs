@@ -7,9 +7,11 @@
 //! `LinkFace::new(port) → Pump / Node`. No third-party I/O crates.
 
 pub mod face;
+pub mod half;
 pub mod traits;
 pub mod turn;
 
 pub use face::{FaceError, FaceRx, FaceTx, LinkFace};
+pub use half::{HalfDuplex, LineDirection, NopDirection};
 pub use traits::{ByteSink, ByteSource, ByteTransport};
-pub use turn::{Turn, TurnEvent};
+pub use turn::{Turn, TurnEvent, WindowTurn};
