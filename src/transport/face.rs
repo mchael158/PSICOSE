@@ -56,16 +56,6 @@ impl Ring {
         }
     }
 
-    fn push(&mut self, byte: u8) -> bool {
-        if self.len == RING {
-            return false;
-        }
-        self.buf[self.tail] = byte;
-        self.tail = (self.tail + 1) % RING;
-        self.len += 1;
-        true
-    }
-
     fn pop(&mut self) -> Option<u8> {
         if self.len == 0 {
             return None;
@@ -77,15 +67,24 @@ impl Ring {
     }
 
     fn push_frame(&mut self, bytes: [u8; FRAME_LEN]) -> bool {
+        if self.len > RING - FRAME_LEN {
+            return false;
+        }
         let mut i = 0;
         while i < FRAME_LEN {
-            if !self.push(bytes[i]) {
-                return false;
-            }
+            self.buf[self.tail] = bytes[i];
+            self.tail = (self.tail + 1) % RING;
+            self.len += 1;
             i += 1;
         }
         true
     }
+}
+
+#[derive(Clone, Copy)]
+struct Held {
+    bytes: [u8; FRAME_LEN],
+    control: bool,
 }
 
 struct FaceInner<T> {
@@ -93,10 +92,28 @@ struct FaceInner<T> {
     assembler: FrameAssembler,
     control: Ring,
     payload: Ring,
+    /// A decoded frame the ring could not take. Kept so the next poll
+    /// does not tear it or read further from the UART.
+    pending: Option<Held>,
 }
 
 impl<T: ByteTransport> FaceInner<T> {
+    fn store(&mut self, held: Held) -> bool {
+        if held.control {
+            self.control.push_frame(held.bytes)
+        } else {
+            self.payload.push_frame(held.bytes)
+        }
+    }
+
     fn ingest(&mut self) -> Result<(), FaceError<T::Error>> {
+        if let Some(held) = self.pending {
+            if self.store(held) {
+                self.pending = None;
+            } else {
+                return Ok(());
+            }
+        }
         loop {
             match self.port.read_byte() {
                 Ok(None) => return Ok(()),
@@ -104,20 +121,20 @@ impl<T: ByteTransport> FaceInner<T> {
                     let Some(result) = self.assembler.push(byte) else {
                         continue;
                     };
-                    let bytes = match result {
-                        Ok(frame) => frame.to_bytes(),
-                        Err(_) => self.assembler.last_bytes(),
+                    let held = Held {
+                        bytes: match &result {
+                            Ok(frame) => frame.to_bytes(),
+                            Err(_) => self.assembler.last_bytes(),
+                        },
+                        control: matches!(
+                            result,
+                            Ok(frame)
+                                if matches!(frame.frame_type(), FrameType::Ack | FrameType::Nack)
+                        ),
                     };
-                    let ok = match result {
-                        Ok(frame)
-                            if matches!(frame.frame_type(), FrameType::Ack | FrameType::Nack) =>
-                        {
-                            self.control.push_frame(bytes)
-                        }
-                        _ => self.payload.push_frame(bytes),
-                    };
-                    if !ok {
-                        return Err(FaceError::Full);
+                    if !self.store(held) {
+                        self.pending = Some(held);
+                        return Ok(());
                     }
                 }
                 Err(e) => return Err(FaceError::Port(e)),
@@ -139,9 +156,10 @@ impl<T: ByteTransport> LinkFace<T> {
         LinkFace {
             inner: RefCell::new(FaceInner {
                 port,
-                assembler: FrameAssembler::new(),
+                assembler: FrameAssembler::resyncing(),
                 control: Ring::new(),
                 payload: Ring::new(),
+                pending: None,
             }),
         }
     }
@@ -329,5 +347,50 @@ mod tests {
             assert_eq!(rx.write_byte(0xBB), Ok(()));
         }
         assert_eq!(face.get_mut().written(), &[0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn a_full_ring_keeps_the_next_frame_whole() {
+        const N: usize = 17;
+        struct Script {
+            buf: [u8; N * 4],
+            pos: usize,
+        }
+        impl ByteTransport for Script {
+            type Error = ();
+            fn write_byte(&mut self, _: u8) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn read_byte(&mut self) -> Result<Option<u8>, Self::Error> {
+                if self.pos >= self.buf.len() {
+                    return Ok(None);
+                }
+                let byte = self.buf[self.pos];
+                self.pos += 1;
+                Ok(Some(byte))
+            }
+        }
+
+        let mut raw = [0u8; N * 4];
+        let mut i = 0;
+        while i < N {
+            let frame = Frame::data(i as u8, i as u8).to_bytes();
+            raw[i * 4..i * 4 + 4].copy_from_slice(&frame);
+            i += 1;
+        }
+        let face = LinkFace::new(Script { buf: raw, pos: 0 });
+        let (_tx, mut rx) = face.split();
+        let mut got = [0u8; N * 4];
+        let mut n = 0;
+        while n < got.len() {
+            match rx.read_byte() {
+                Ok(Some(byte)) => {
+                    got[n] = byte;
+                    n += 1;
+                }
+                other => panic!("short read at {n}: {other:?}"),
+            }
+        }
+        assert_eq!(got, raw);
     }
 }

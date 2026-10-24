@@ -65,15 +65,24 @@ impl Ring {
     }
 
     fn push_frame(&mut self, bytes: [u8; FRAME_LEN]) -> bool {
+        if self.len > RING - FRAME_LEN {
+            return false;
+        }
         let mut i = 0;
         while i < FRAME_LEN {
-            if !self.push(bytes[i]) {
-                return false;
-            }
+            self.buf[self.tail] = bytes[i];
+            self.tail = (self.tail + 1) % RING;
+            self.len += 1;
             i += 1;
         }
         true
     }
+}
+
+#[derive(Clone, Copy)]
+struct Held {
+    bytes: [u8; FRAME_LEN],
+    control: bool,
 }
 
 struct Lane {
@@ -81,34 +90,52 @@ struct Lane {
     assembler: FrameAssembler,
     control: Ring,
     payload: Ring,
+    pending: Option<Held>,
 }
 
 impl Lane {
     const fn new() -> Self {
         Lane {
             wire: Ring::new(),
-            assembler: FrameAssembler::new(),
+            assembler: FrameAssembler::resyncing(),
             control: Ring::new(),
             payload: Ring::new(),
+            pending: None,
+        }
+    }
+
+    fn store(&mut self, held: Held) -> bool {
+        if held.control {
+            self.control.push_frame(held.bytes)
+        } else {
+            self.payload.push_frame(held.bytes)
         }
     }
 
     fn ingest(&mut self) {
+        if let Some(held) = self.pending {
+            if self.store(held) {
+                self.pending = None;
+            } else {
+                return;
+            }
+        }
         while let Some(byte) = self.wire.pop() {
             let Some(result) = self.assembler.push(byte) else {
                 continue;
             };
-            let bytes = match result {
-                Ok(frame) => frame.to_bytes(),
-                Err(_) => self.assembler.last_bytes(),
+            let held = Held {
+                bytes: match &result {
+                    Ok(frame) => frame.to_bytes(),
+                    Err(_) => self.assembler.last_bytes(),
+                },
+                control: matches!(
+                    result,
+                    Ok(frame) if matches!(frame.frame_type(), FrameType::Ack | FrameType::Nack)
+                ),
             };
-            let ok = match result {
-                Ok(frame) if matches!(frame.frame_type(), FrameType::Ack | FrameType::Nack) => {
-                    self.control.push_frame(bytes)
-                }
-                _ => self.payload.push_frame(bytes),
-            };
-            if !ok {
+            if !self.store(held) {
+                self.pending = Some(held);
                 return;
             }
         }
@@ -431,5 +458,45 @@ mod tests {
         }
         assert_eq!(got, bad);
         assert_eq!(a_tx.read_byte(), Ok(None));
+    }
+
+    #[test]
+    fn a_full_ring_keeps_the_next_frame_whole() {
+        let wire = DuplexWire::new();
+        let (mut a_tx, _a_rx, _b_tx, mut b_rx) = wire.ends();
+        let mut i = 0;
+        while i < 16 {
+            for byte in Frame::data(i as u8, i as u8).to_bytes() {
+                assert_eq!(a_tx.write_byte(byte), Ok(()));
+            }
+            i += 1;
+        }
+        let first = match b_rx.read_byte() {
+            Ok(Some(byte)) => byte,
+            other => panic!("expected the first byte, got {other:?}"),
+        };
+        for byte in Frame::data(16, 16).to_bytes() {
+            assert_eq!(a_tx.write_byte(byte), Ok(()));
+        }
+
+        let mut got = [0u8; 17 * 4];
+        got[0] = first;
+        let mut n = 1;
+        while n < got.len() {
+            match b_rx.read_byte() {
+                Ok(Some(byte)) => {
+                    got[n] = byte;
+                    n += 1;
+                }
+                other => panic!("short read at {n}: {other:?}"),
+            }
+        }
+        let mut expect = [0u8; 17 * 4];
+        let mut f = 0;
+        while f < 17 {
+            expect[f * 4..f * 4 + 4].copy_from_slice(&Frame::data(f as u8, f as u8).to_bytes());
+            f += 1;
+        }
+        assert_eq!(got, expect);
     }
 }

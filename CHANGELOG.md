@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A dropped UART byte no longer pins every later frame to the wrong
+  boundary. A CRC miss still consumes the whole window, so a bit flip
+  does not shift the next frame. A demux ring that cannot take four
+  more bytes holds the frame instead of tearing it. A failed RS-485
+  burst drops the direction pin before the error returns.
+
 - **CRC-8** folds each header byte as two nibbles through a 16-byte table
   derived from the bit step. Encode and decode call one shared `crc8`.
   The polynomial is unchanged (0x07, init 0x00).

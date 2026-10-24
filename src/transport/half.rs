@@ -89,7 +89,11 @@ impl<T: ByteTransport, D: LineDirection> ByteTransport for HalfDuplex<T, D> {
         }
         self.dir.transmit();
         while self.flushed < FRAME_LEN {
-            self.port.write_byte(self.stage[self.flushed])?;
+            if let Err(err) = self.port.write_byte(self.stage[self.flushed]) {
+                // A stuck DE pin holds the pair. The retry raises it again.
+                self.dir.receive();
+                return Err(err);
+            }
             self.flushed += 1;
         }
         self.dir.receive();
@@ -208,6 +212,22 @@ mod tests {
         // Pump retries the same fourth byte. The stage must not grow.
         line.write_byte(0xD).unwrap();
         assert_eq!(&line.port().out[..4], &[0xA, 0xB, 0xC, 0xD]);
+    }
+
+    #[test]
+    fn a_failed_burst_drops_the_pin() {
+        let mut port = SpyPort::new();
+        port.fail_times = 1;
+        let mut line = HalfDuplex::new(port, Pin::default());
+        line.write_byte(0x01).unwrap();
+        line.write_byte(0x02).unwrap();
+        line.write_byte(0x03).unwrap();
+        assert!(line.write_byte(0x04).is_err());
+        assert!(!line.direction().high);
+        assert_eq!(line.direction().falls, 1);
+        line.write_byte(0x04).unwrap();
+        assert!(!line.direction().high);
+        assert_eq!(&line.port().out[..4], &[0x01, 0x02, 0x03, 0x04]);
     }
 
     /// Shared air. `RefCell` so two [`HalfDuplex`] ends can key the pin.

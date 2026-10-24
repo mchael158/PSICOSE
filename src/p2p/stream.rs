@@ -330,6 +330,9 @@ impl<'a> Defragmenter<'a> {
     }
 
     fn push_header(&mut self, byte: u8) -> Result<bool, DefragError> {
+        if self.hdr_at >= HEADER_LEN {
+            self.hdr_at = 0;
+        }
         self.hdr[self.hdr_at] = byte;
         self.hdr_at += 1;
         if self.hdr_at < HEADER_LEN {
