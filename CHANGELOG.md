@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 — 2026-10-24
 
 - A dropped UART byte no longer pins every later frame to the wrong
   boundary. A CRC miss still consumes the whole window, so a bit flip
