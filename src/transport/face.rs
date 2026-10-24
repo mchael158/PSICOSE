@@ -31,6 +31,7 @@ use core::fmt;
 use crate::protocol::{FrameAssembler, FrameType, FRAME_LEN};
 use crate::pump::{Pump, WindowedPump};
 use crate::timeout::RetryPolicy;
+use crate::transport::page::PageLink;
 use crate::transport::turn::{Turn, WindowTurn};
 use crate::transport::ByteTransport;
 use crate::window::MAX_WINDOW;
@@ -180,6 +181,14 @@ impl<T: ByteTransport> LinkFace<T> {
     ) -> WindowTurn<FaceTx<'_, T>, FaceRx<'_, T>, N> {
         let (tx, rx) = self.split();
         WindowTurn::new(crate::pump::WindowedPump::on(tx, rx), first)
+    }
+
+    /// Firmware path: pages of at most `N` bytes, then one status byte.
+    ///
+    /// The listener must [`PageLink::ack`] after each page. Without that
+    /// byte the speaker's next [`PageLink::push_page`] stays at zero.
+    pub fn page<const N: usize>(&self, first: bool) -> PageLink<FaceTx<'_, T>, FaceRx<'_, T>, N> {
+        PageLink::new(self.window_turn(first))
     }
 
     /// Windowed pump for [`crate::PeerLink`] (`N = MAX_WINDOW`, limit 1 until hello).

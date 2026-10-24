@@ -92,6 +92,7 @@ Do **not** build an external P2P stack and pass sockets into psicose.
 | [`LinkFace`](https://docs.rs/psicose/latest/psicose/struct.LinkFace.html) | Demux one physical port into Pump TX/RX ends (**hardware path**). |
 | [`Turn`](https://docs.rs/psicose/latest/psicose/struct.Turn.html) | Both peers send: one session at a time, then the turn flips. |
 | [`WindowTurn`](https://docs.rs/psicose/latest/psicose/struct.WindowTurn.html) | Hardware entry: same turn, DATA window of 8. No P2P hello. |
+| [`PageLink`](https://docs.rs/psicose/latest/psicose/struct.PageLink.html) | Firmware pages of at most 8 bytes. One status byte opens the next page. |
 | [`HalfDuplex`](https://docs.rs/psicose/latest/psicose/struct.HalfDuplex.html) | RS-485 / radio: release a frame in one burst and toggle the direction pin. |
 | [`FaceTx`](https://docs.rs/psicose/latest/psicose/struct.FaceTx.html) / [`FaceRx`](https://docs.rs/psicose/latest/psicose/struct.FaceRx.html) | Ends from `LinkFace::split()`. |
 | [`FaceError`](https://docs.rs/psicose/latest/psicose/enum.FaceError.html) | Port error or demux ring full. |

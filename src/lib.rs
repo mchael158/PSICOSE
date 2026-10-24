@@ -138,7 +138,7 @@ pub use timeout::{IdleBudget, RetryPolicy};
 #[doc(inline)]
 pub use transport::{
     ByteSink, ByteSource, ByteTransport, FaceError, FaceRx, FaceTx, HalfDuplex, LineDirection,
-    LinkFace, NopDirection, Turn, TurnEvent, WindowTurn,
+    LinkFace, NopDirection, PageEvent, PageLink, Turn, TurnEvent, WindowTurn,
 };
 #[doc(inline)]
 pub use tx::{Sender, TxPoll, TxState};

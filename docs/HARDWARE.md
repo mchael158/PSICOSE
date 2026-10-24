@@ -80,7 +80,10 @@ loop { let _ = link.poll(); }
 ```
 
 `window_turn` is the crossed-UART entry: one session at a time, DATA
-window of 8, no P2P hello. A single pair (RS-485, radio) uses
+window of 8, no P2P hello. A firmware image uses
+[`PageLink`](https://docs.rs/psicose/latest/psicose/struct.PageLink.html)
+(`LinkFace::page`): at most 8 bytes, then the listener sends one status
+byte so the next page is granted. A single pair (RS-485, radio) uses
 [`HalfDuplex`](https://docs.rs/psicose/latest/psicose/struct.HalfDuplex.html)
 plus stop-and-wait `Turn`: the frame is staged and the direction pin is
 high only for that burst. Set `FIRST` on exactly one peer. UART: opposite

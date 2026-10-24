@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`PageLink`** / `LinkFace::page` — firmware image as pages of at most
+  8 bytes. The listener answers each page with one status byte; that
+  byte is its turn, so the next page can start. Host:
+  `cargo run --example firmware_flash`.
+
 - **`HalfDuplex`** — RS-485 / radio line. A frame is staged, then clocked
   out in one burst while [`LineDirection`] holds the pin. Stop-and-wait
   [`Turn`] is the session on that pair. ESP32 UART: `RS485` on GPIO4.

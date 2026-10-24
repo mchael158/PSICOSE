@@ -8,10 +8,12 @@
 
 pub mod face;
 pub mod half;
+pub mod page;
 pub mod traits;
 pub mod turn;
 
 pub use face::{FaceError, FaceRx, FaceTx, LinkFace};
 pub use half::{HalfDuplex, LineDirection, NopDirection};
+pub use page::{PageEvent, PageLink};
 pub use traits::{ByteSink, ByteSource, ByteTransport};
 pub use turn::{Turn, TurnEvent, WindowTurn};

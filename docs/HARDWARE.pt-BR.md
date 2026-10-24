@@ -79,8 +79,15 @@ let _ = link.push(&amostra); // até 8 bytes enchem a janela de DATA
 loop { let _ = link.poll(); }
 ```
 
-`window_turn` é a entrada de hardware: uma sessão por vez, janela de
-DATA 8, sem hello P2P. Grave `FIRST` em exatamente um par. UART: `FIRST`
+`window_turn` é a entrada UART cruzada: uma sessão por vez, janela de
+DATA 8, sem hello P2P. Uma imagem de firmware usa
+[`PageLink`](https://docs.rs/psicose/latest/psicose/struct.PageLink.html)
+(`LinkFace::page`): no máximo 8 bytes, depois o ouvinte manda um byte
+de status para a página seguinte ser concedida. Um par único (RS-485,
+rádio) usa
+[`HalfDuplex`](https://docs.rs/psicose/latest/psicose/struct.HalfDuplex.html)
+com `Turn` stop-and-wait: o frame fica retido e o pino de direção sobe
+só durante o burst. Grave `FIRST` em exatamente um par. UART: `FIRST`
 oposto nos dois boards (amostras de 8 bytes). Wi-Fi: o board abre com
 `ping` no `Turn` stop-and-wait, e `turn_pair --listen` responde `pong`.
 Anel RX cheio espera. Veja os READMEs dos boards.
