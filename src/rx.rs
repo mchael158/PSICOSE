@@ -191,18 +191,55 @@ impl<T: ByteTransport> Receiver<T> {
     /// Polls the transport once: writes at most one reply byte, or reads
     /// at most one incoming byte. Non-blocking.
     ///
-    /// Callers loop on this, e.g.:
+    /// Callers loop on this. One in-order DATA frame is delivered only
+    /// after its ACK has been written:
     ///
-    /// ```ignore
-    /// loop {
-    ///     match receiver.poll()? {
-    ///         PollOutcome::Delivered(byte) => sink.write_byte(byte)?,
+    /// ```
+    /// use psicose::{ByteSink, ByteTransport, Frame, PollOutcome, Receiver, SliceSink};
+    ///
+    /// struct Ram {
+    ///     incoming: [u8; 4],
+    ///     pos: usize,
+    /// }
+    ///
+    /// impl ByteTransport for Ram {
+    ///     type Error = core::convert::Infallible;
+    ///
+    ///     fn write_byte(&mut self, _byte: u8) -> Result<(), Self::Error> {
+    ///         Ok(())
+    ///     }
+    ///
+    ///     fn read_byte(&mut self) -> Result<Option<u8>, Self::Error> {
+    ///         if self.pos >= self.incoming.len() {
+    ///             return Ok(None);
+    ///         }
+    ///         let byte = self.incoming[self.pos];
+    ///         self.pos += 1;
+    ///         Ok(Some(byte))
+    ///     }
+    /// }
+    ///
+    /// let mut receiver = Receiver::new(Ram {
+    ///     incoming: Frame::data(0, 0x42).to_bytes(),
+    ///     pos: 0,
+    /// });
+    /// let mut buf = [0u8; 1];
+    /// let mut sink = SliceSink::new(&mut buf);
+    /// for _ in 0..16 {
+    ///     match receiver.poll().unwrap() {
+    ///         PollOutcome::Delivered(byte) => {
+    ///             sink.write_byte(byte).unwrap();
+    ///             break;
+    ///         }
     ///         PollOutcome::TransferFinished | PollOutcome::Aborted => break,
-    ///         PollOutcome::Started | PollOutcome::Pending
-    ///         | PollOutcome::DuplicateIgnored | PollOutcome::Rejected
+    ///         PollOutcome::Started
+    ///         | PollOutcome::Pending
+    ///         | PollOutcome::DuplicateIgnored
+    ///         | PollOutcome::Rejected
     ///         | PollOutcome::CrcRejected => {}
     ///     }
     /// }
+    /// assert_eq!(sink.written(), &[0x42]);
     /// ```
     pub fn poll(&mut self) -> Result<PollOutcome, Error<T::Error>> {
         if !self.out.is_idle() {

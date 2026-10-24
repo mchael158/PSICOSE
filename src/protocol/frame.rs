@@ -16,7 +16,7 @@
 //! breaks those rules (e.g. an ACK with `DATA = 0xFF` on the wire).
 //! CRC-valid ≠ semantically valid.
 
-use super::crc::crc8;
+use super::crc::crc8_header;
 
 /// Application payload per DATA frame, in bytes. Always exactly 8 bits.
 pub const PAYLOAD_LEN: usize = 1;
@@ -148,9 +148,9 @@ impl Frame {
 
     /// Serializes the frame to its 4-byte wire representation.
     pub const fn to_bytes(&self) -> [u8; FRAME_LEN] {
-        let header = [self.frame_type as u8, self.seq, self.data];
-        let crc = crc8(&header);
-        [header[0], header[1], header[2], crc]
+        let type_byte = self.frame_type as u8;
+        let crc = crc8_header(type_byte, self.seq, self.data);
+        [type_byte, self.seq, self.data, crc]
     }
 
     const fn semantics_ok(frame_type: FrameType, seq: u8, data: u8) -> bool {
@@ -167,7 +167,7 @@ impl Frame {
     pub fn from_bytes(bytes: [u8; FRAME_LEN]) -> Result<Self, FrameError> {
         let frame_type = FrameType::from_u8(bytes[0]).ok_or(FrameError::InvalidType(bytes[0]))?;
 
-        let expected = crc8(&bytes[..3]);
+        let expected = crc8_header(bytes[0], bytes[1], bytes[2]);
         let got = bytes[3];
         if expected != got {
             return Err(FrameError::CrcMismatch { expected, got });
@@ -185,6 +185,7 @@ impl Frame {
 
 #[cfg(test)]
 mod tests {
+    use super::super::crc::crc8;
     use super::*;
 
     #[test]

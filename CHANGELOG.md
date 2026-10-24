@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **CRC-8** folds each header byte as two nibbles through a 16-byte table
+  derived from the bit step. Encode and decode call one shared `crc8`.
+  The polynomial is unchanged (0x07, init 0x00).
+
 - **`PageLink`** / `LinkFace::page` — firmware image as pages of at most
   8 bytes. The listener answers each page with one status byte; that
   byte is its turn, so the next page can start. Host:
